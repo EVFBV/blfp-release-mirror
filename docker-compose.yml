@@ -1,0 +1,39 @@
+services:
+  blfp-mirror:
+    build: .
+    image: blfp-release-mirror:latest
+    container_name: blfp-release-mirror
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 要镜像的仓库
+      GITHUB_REPO: EVFBV/blfp-client
+      # 包含 pre-release（你要求包含）
+      INCLUDE_PRERELEASE: "true"
+      # 本地只保留最新 1 个版本，其余自动删除；想留 2 个用于回滚就改成 2
+      KEEP_VERSIONS: "1"
+      # 每 10 分钟检查一次新版本
+      SYNC_INTERVAL_SECONDS: "600"
+      SYNC_ON_START: "true"
+      # 只镜像 .exe 安装包（留空或删掉这行 = 下载所有资产）
+      # ASSET_REGEX: "\\.exe$"
+      # 公开仓库可不填；填了能把 GitHub API 限额从 60 次/小时提到 5000 次/小时
+      # GITHUB_TOKEN: "ghp_xxxxxxxx"
+      # 填了以后 POST /api/sync 需要带 token
+      # API_TOKEN: "change-me"
+      # 下载接口也要求 token（默认 false）
+      PROTECT_DOWNLOADS: "false"
+      # 反代/公网时填，API 里返回的下载地址会用它
+      # PUBLIC_BASE_URL: "https://dl.example.com"
+    volumes:
+      - blfp-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  blfp-data:

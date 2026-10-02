@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BLFP Releases 本地镜像</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --card: #171a21;
+        --line: #262b36;
+        --fg: #e6e8ee;
+        --muted: #99a1b3;
+        --accent: #4f8cff;
+        --ok: #35c46b;
+        --warn: #e2b341;
+        --err: #ef5b5b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      header {
+        padding: 28px 24px 20px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(180deg, #1a1f2b, var(--bg));
+      }
+      h1 { margin: 0 0 6px; font-size: 22px; }
+      .sub { color: var(--muted); font-size: 13px; }
+      main { max-width: 1080px; margin: 0 auto; padding: 22px 24px 64px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 18px 0 26px; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px 16px;
+      }
+      .card .k { color: var(--muted); font-size: 12px; letter-spacing: 0.03em; text-transform: uppercase; }
+      .card .v { font-size: 17px; margin-top: 5px; word-break: break-all; }
+      h2 { font-size: 16px; margin: 26px 0 10px; }
+      table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+      th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; }
+      tr:last-child td { border-bottom: none; }
+      code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+      .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--line); color: var(--muted); }
+      .pill.pre { color: var(--warn); border-color: #4a3d19; }
+      .pill.ok { color: var(--ok); border-color: #1d4030; }
+      .pill.err { color: var(--err); border-color: #4a2020; }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      button {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); }
+      button:disabled { opacity: 0.55; cursor: not-allowed; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .muted { color: var(--muted); }
+      input[type='text'],
+      input[type='number'] {
+        background: #10131a;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--fg);
+        padding: 7px 10px;
+        font-size: 13.5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      input:focus { outline: 1px solid var(--accent); }
+      .err-box { border-color: #4a2020; color: #ffb4b4; }
+      pre {
+        background: #10131a;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px 14px;
+        overflow: auto;
+        font-size: 12.5px;
+      }
+      .bar { height: 6px; background: #10131a; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+      .bar > i { display: block; height: 100%; background: var(--accent); width: 0; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>BLFP Releases 本地镜像</h1>
+      <div class="sub">
+        自动同步 GitHub Releases（含 pre-release）到本地磁盘并清理旧版本 · 支持浏览器直接下载与 API 调用
+      </div>
+    </header>
+    <main>
+      <div class="grid" id="summary"></div>
+
+      <h2>当前保存的文件</h2>
+      <div class="card" id="files"><span class="muted">加载中…</span></div>
+
+      <h2>版本详情</h2>
+      <div class="card" id="releases"><span class="muted">加载中…</span></div>
+
+      <h2>同步</h2>
+      <div class="card">
+        <div class="row">
+          <button id="sync-btn">立即检查并同步</button>
+          <button class="ghost" id="reload-btn">刷新页面数据</button>
+          <span class="muted" id="sync-msg"></span>
+        </div>
+        <div class="bar"><i id="sync-bar"></i></div>
+        <pre id="sync-detail"></pre>
+      </div>
+
+      <h2>镜像配置（可运行时修改，保存后立即生效）</h2>
+      <div class="card">
+        <div class="grid" style="margin:0 0 12px">
+          <label class="card" style="display:block">
+            <div class="k">GitHub 仓库 (owner/repo)</div>
+            <input id="set-repo" type="text" placeholder="EVFBV/blfp-client" style="width:100%;margin-top:6px" />
+          </label>
+          <label class="card" style="display:block">
+            <div class="k">GitHub API 地址（企业版可改）</div>
+            <input id="set-apibase" type="text" placeholder="https://api.github.com" style="width:100%;margin-top:6px" />
+          </label>
+          <label class="card" style="display:block">
+            <div class="k">保留版本数 KEEP_VERSIONS</div>
+            <input id="set-keep" type="number" min="1" max="100" style="width:100%;margin-top:6px" />
+          </label>
+          <label class="card" style="display:block">
+            <div class="k">轮询间隔（秒）</div>
+            <input id="set-interval" type="number" min="0" max="86400" style="width:100%;margin-top:6px" />
+          </label>
+          <label class="card" style="display:block">
+            <div class="k">资产过滤正则（可留空 = 全部）</div>
+            <input id="set-assetregex" type="text" placeholder="\.exe$" style="width:100%;margin-top:6px" />
+          </label>
+          <label class="card" style="display:block">
+            <div class="k">包含 pre-release</div>
+            <div style="margin-top:10px"><input id="set-prerelease" type="checkbox" /> 包含预发布版（pre）</div>
+          </label>
+        </div>
+        <div class="row">
+          <button id="settings-save">保存并立即同步</button>
+          <button class="ghost" id="settings-reset">恢复环境变量默认</button>
+          <span class="muted" id="settings-msg"></span>
+        </div>
+        <div class="muted mono" id="settings-file" style="margin-top:8px"></div>
+      </div>
+
+      <h2>API 用法</h2>
+      <div class="card">
+        <pre id="api-usage"></pre>
+      </div>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const fmt = (n) => {
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let v = Number(n) || 0, i = 0;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + units[i];
+      };
+      const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+
+      async function getJson(path) {
+        const res = await fetch(path, { headers: { accept: 'application/json' } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+        return data;
+      }
+
+      function renderSummary(status) {
+        const s = status.sync || {};
+        const current = s.current;
+        const items = [
+          ['最新本地版本', (s.lastResult && s.lastResult.newestTag) || (status.manifest?.localTags?.[0]) || '—'],
+          ['最近一次成功同步', when(s.lastSuccessAt)],
+          ['下次自动检查', when(s.nextRunAt)],
+          ['仓库', status.repo],
+          ['本地空间占用', `${fmt(status.storage?.bytes)} · ${status.storage?.fileCount ?? 0} 个文件`],
+          ['保留版本数', s.config?.keepVersions],
+          ['包含 pre-release', s.config?.includePrerelease ? '是' : '否'],
+          ['同步间隔(秒)', s.config?.syncIntervalSeconds],
+        ];
+        $('summary').innerHTML = items
+          .map(([k, v]) => `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`)
+          .join('');
+        if (s.lastError) {
+          $('summary').insertAdjacentHTML(
+            'beforeend',
+            `<div class="card err-box"><div class="k">最近错误</div><div class="v">${esc(s.lastError)}</div></div>`,
+          );
+        }
+        if (current) {
+          const pct = current.total ? Math.min(100, (current.received / current.total) * 100) : 0;
+          $('sync-bar').style.width = pct.toFixed(1) + '%';
+          $('sync-detail').textContent = `正在下载 ${current.fileName}\n进度 ${fmt(current.received)} / ${fmt(current.total)} (${pct.toFixed(1)}%)  尝试 ${current.attempt || 1}\n阶段: ${current.phase}`;
+        } else {
+          $('sync-bar').style.width = '0%';
+          $('sync-detail').textContent = JSON.stringify(
+            { running: s.running, reason: s.reason, lastResult: s.lastResult, lastError: s.lastError, nextRunAt: s.nextRunAt },
+            null,
+            2,
+          );
+        }
+      }
+
+      function renderFiles(data) {
+        if (!data.files?.length) {
+          $('files').innerHTML = '<span class="muted">本地暂无文件，可能还在首次同步中（几百 MB 需要一些时间）。</span>';
+          return;
+        }
+        $('files').innerHTML = `
+          <table>
+            <thead><tr><th>文件</th><th>版本</th><th>大小</th><th>修改时间</th><th>下载</th></tr></thead>
+            <tbody>
+              ${data.files
+                .map(
+                  (f) => `<tr>
+                    <td><span class="mono">${esc(f.name)}</span>${f.sha256 ? `<div class="muted mono">sha256: ${esc(f.sha256.slice(0, 16))}…</div>` : ''}</td>
+                    <td>${esc(f.tag || '—')} ${f.prerelease ? '<span class="pill pre">pre</span>' : ''}</td>
+                    <td>${fmt(f.size)}</td>
+                    <td class="muted">${esc(when(f.modifiedAt))}</td>
+                    <td><a href="${esc(f.downloadUrl)}">下载</a> · <a href="${esc(f.directUrl)}">直链</a></td>
+                  </tr>`,
+                )
+                .join('')}
+            </tbody>
+          </table>`;
+      }
+
+      function renderReleases(data) {
+        if (!data.releases?.length) {
+          $('releases').innerHTML = '<span class="muted">还没有同步到任何 release。</span>';
+          return;
+        }
+        $('releases').innerHTML = data.releases
+          .map(
+            (r) => `
+          <div style="margin-bottom:14px">
+            <div class="row">
+              <strong>${esc(r.tag)}</strong>
+              ${r.prerelease ? '<span class="pill pre">pre-release</span>' : '<span class="pill ok">release</span>'}
+              <span class="muted">发布于 ${esc(when(r.publishedAt))}</span>
+              <a href="${esc(r.htmlUrl)}" target="_blank" rel="noreferrer">GitHub 发布页</a>
+            </div>
+            <table>
+              <tbody>
+                ${(r.assets || [])
+                  .map(
+                    (a) => `<tr>
+                      <td><span class="mono">${esc(a.name)}</span></td>
+                      <td>${fmt(a.size)}</td>
+                      <td>${a.downloaded ? '<span class="pill ok">已下载</span>' : `<span class="pill err">未就绪${a.error ? ': ' + esc(a.error) : ''}</span>`}</td>
+                      <td class="muted mono">${a.sha256 ? esc(a.sha256.slice(0, 20)) + '…' : '—'}</td>
+                      <td>${a.downloadUrl ? `<a href="${esc(a.downloadUrl)}">下载</a>` : '—'}</td>
+                    </tr>`,
+                  )
+                  .join('')}
+              </tbody>
+            </table>
+          </div>`,
+          )
+          .join('');
+      }
+
+      function renderUsage(baseUrl) {
+        $('api-usage').textContent = `# 1) 查询最新版本（JSON）
+curl ${baseUrl}/api/latest
+
+# 2) 直接下载最新版本（浏览器打开同样有效，永远指向最新）
+curl -L -O -J ${baseUrl}/latest
+
+# 3) 列出本地全部文件
+curl ${baseUrl}/api/files
+
+# 4) 按文件名下载（支持断点续传 Range）
+curl -L -O -J ${baseUrl}/download/<fileName>
+
+# 5) 立即触发一次同步（后台执行）
+curl -X POST ${baseUrl}/api/sync
+# 需要等待同步结果时：
+curl -X POST "${baseUrl}/api/sync?wait=1"
+
+# 6) 只检查远端是否有新版本
+curl ${baseUrl}/api/check
+
+# 7) 运行状态 / 进度
+curl ${baseUrl}/api/status
+
+# 8) 查看当前配置（含运行时配置来源）
+curl ${baseUrl}/api/settings
+
+# 9) 运行时切换要镜像的 GitHub 仓库（保存后立即生效并开始同步）
+curl -X POST ${baseUrl}/api/settings \\
+  -H 'Content-Type: application/json' \\
+  -d '{"repo":"owner/repo","includePrerelease":true,"keepVersions":1}'
+
+# 10) 恢复为环境变量里的默认配置
+curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"reset":true}'`;
+      }
+
+      let settingsDirty = false;
+
+      function renderSettings(s, force = false) {
+        const fileLine =
+          `配置文件: ${s.settingsFile} · ` +
+          (s.settingsFileActive ? `已覆盖字段: ${(s.overriddenFields || []).join(', ') || '无'}` : '当前完全使用环境变量配置') +
+          ` · GITHUB_TOKEN: ${s.githubTokenConfigured ? '已配置（仅支持环境变量）' : '未配置'}`;
+        $('settings-file').textContent = fileLine;
+        // 不要覆盖用户正在编辑的内容
+        if (!force && settingsDirty) return;
+        $('set-repo').value = s.repo || '';
+        $('set-apibase').value = s.apiBase || '';
+        $('set-keep').value = s.keepVersions ?? '';
+        $('set-interval').value = s.syncIntervalSeconds ?? '';
+        $('set-assetregex').value = s.assetRegex || '';
+        $('set-prerelease').checked = Boolean(s.includePrerelease);
+        settingsDirty = false;
+      }
+
+      function tokenHeaders(extra = {}) {
+        const headers = { accept: 'application/json', ...extra };
+        const token = new URLSearchParams(location.search).get('token');
+        if (token) headers.authorization = 'Bearer ' + token;
+        return headers;
+      }
+
+      async function postSettings(payload) {
+        const msg = $('settings-msg');
+        msg.textContent = '保存中…';
+        try {
+          const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: tokenHeaders({ 'content-type': 'application/json' }),
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 401) {
+            msg.textContent = '需要鉴权：请在 URL 后加 ?token=<API_TOKEN> 再重试';
+            return;
+          }
+          if (!res.ok) {
+            msg.textContent = '保存失败: ' + (data.message || `HTTP ${res.status}`);
+            return;
+          }
+          msg.textContent = data.message || '已保存';
+          if (data.settings) renderSettings(data.settings, true);
+          setTimeout(refresh, 800);
+        } catch (err) {
+          msg.textContent = '请求失败: ' + err.message;
+        }
+      }
+
+      async function refresh() {
+        try {
+          const [status, releases, files, settings] = await Promise.all([
+            getJson('/api/status'),
+            getJson('/api/releases'),
+            getJson('/api/files'),
+            getJson('/api/settings').catch(() => null),
+          ]);
+          renderSummary(status);
+          renderReleases(releases);
+          renderFiles(files);
+          if (settings && !settings.error) renderSettings(settings);
+          renderUsage(releases.baseUrl || location.origin);
+        } catch (err) {
+          $('sync-msg').textContent = '加载失败: ' + err.message;
+        }
+      }
+
+      $('sync-btn').addEventListener('click', async () => {
+        const btn = $('sync-btn');
+        btn.disabled = true;
+        $('sync-msg').textContent = '已发送同步请求…';
+        try {
+          const headers = { accept: 'application/json' };
+          const token = new URLSearchParams(location.search).get('token');
+          if (token) headers.authorization = 'Bearer ' + token;
+          const res = await fetch('/api/sync', { method: 'POST', headers });
+          const data = await res.json().catch(() => ({}));
+          $('sync-msg').textContent = res.status === 401
+            ? '需要鉴权：请在 URL 后加 ?token=<API_TOKEN> 再点此按钮'
+            : data.message || `HTTP ${res.status}`;
+        } catch (err) {
+          $('sync-msg').textContent = '请求失败: ' + err.message;
+        } finally {
+          btn.disabled = false;
+          setTimeout(refresh, 800);
+        }
+      });
+
+      $('reload-btn').addEventListener('click', refresh);
+
+      ['set-repo', 'set-apibase', 'set-keep', 'set-interval', 'set-assetregex', 'set-prerelease'].forEach((id) => {
+        $(id).addEventListener('input', () => {
+          settingsDirty = true;
+          $('settings-msg').textContent = '有未保存的修改';
+        });
+      });
+
+      $('settings-save').addEventListener('click', async () => {
+        const payload = {
+          repo: $('set-repo').value.trim(),
+          apiBase: $('set-apibase').value.trim() || undefined,
+          includePrerelease: $('set-prerelease').checked,
+          assetRegex: $('set-assetregex').value.trim(),
+        };
+        const keep = $('set-keep').value.trim();
+        const interval = $('set-interval').value.trim();
+        if (keep) payload.keepVersions = Number(keep);
+        if (interval !== '') payload.syncIntervalSeconds = Number(interval);
+        Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+        await postSettings(payload);
+      });
+
+      $('settings-reset').addEventListener('click', () => postSettings({ reset: true }));
+
+      refresh();
+      setInterval(refresh, 5000);
+    </script>
+  </body>
+</html>

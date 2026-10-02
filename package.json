@@ -1,0 +1,23 @@
+{
+  "name": "blfp-release-mirror",
+  "version": "1.0.0",
+  "private": true,
+  "description": "自动同步 GitHub Releases（含 pre-release）到本地磁盘，删除旧版本，并提供可直接访问 / API 调用的下载服务",
+  "type": "module",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/server.js"
+  },
+  "keywords": [
+    "github-releases",
+    "mirror",
+    "docker",
+    "download-api"
+  ],
+  "license": "MIT"
+}
