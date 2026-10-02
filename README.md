@@ -111,6 +111,10 @@ docker logs -f blfp-release-mirror
 ```bash
 docker build -t blfp-release-mirror:latest .
 
+# 拉 node:22-alpine 太慢时，换国内基础镜像源再构建：
+# docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:22-alpine \
+#   -t blfp-release-mirror:latest .
+
 docker run -d \
   --name blfp-release-mirror \
   --restart unless-stopped \

@@ -1,5 +1,7 @@
-# 使用官方 Node 运行时（本项目零第三方依赖，无需 npm install）
-FROM node:22-alpine
+# 基础镜像可用 --build-arg 换成国内加速源（本机拉 node:22-alpine 慢时很有用）：
+#   docker build --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:22-alpine -t blfp-release-mirror .
+ARG NODE_IMAGE=node:22-alpine
+FROM ${NODE_IMAGE}
 
 LABEL org.opencontainers.image.title="blfp-release-mirror" \
       org.opencontainers.image.description="自动同步 GitHub Releases（含 pre-release）到本地并删除旧版本，提供直接下载与 API" \
