@@ -57,7 +57,14 @@ curl -fsSLO https://raw.githubusercontent.com/EVFBV/blfp-release-mirror/main/doc
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-打开 <http://localhost:8080> 就能看到网页控制台。可用标签：`latest`、`1.0.0`、`1.0`（想锁定版本就用 `:1.0.0`）。
+打开 <http://localhost:8080> 就能看到网页控制台。只有两个标签，不会让人挑花眼：
+
+| 标签 | 用途 |
+| --- | --- |
+| `latest` | 跟着最新发布走，适合想自动用上新版 |
+| `1.0.0` | 固定版本，生产环境推荐（升级时手动改版本号） |
+
+同一个镜像的多个标签只是别名，**不额外占存储**（多架构镜像也只占一个包版本）。
 
 > 镜像地址是 `ghcr.io/evfbv/blfp-release-mirror`。若 `docker pull` 提示无权限，说明该包被设成了私有，
 > 可在 GitHub 仓库页 → Packages → 该包 → Settings 里改为 Public（或先 `docker login ghcr.io`）。
@@ -317,6 +324,13 @@ location / {
 
 **Q：怎么强制重新下载当前版本？**
 删掉 `/data/files/` 里对应文件再 `curl -X POST /api/sync` 即可（服务会发现文件缺失并重新下载）。
+
+**Q：GHCR 包页面上一堆镜像/标签，该清理吗？**
+标签只是同一镜像的别名（digest 相同），不额外占存储，随便用哪个都能跑；本项目只推 `<版本号>` 和 `latest`
+两个标签。真正会累积的是**历史版本**（每发一个版本多一个 digest）。需要清理时运行仓库的
+`cleanup-packages` 工作流：Actions → cleanup-packages → Run workflow，默认保留最近 5 个版本、
+并删除 `1.0`、`v1.0.0` 这类冗余别名标签（可勾 `dry_run` 先预览）。本机镜像堆积用
+`docker image prune -a` 清理即可。
 
 **Q：端口/容器起不来？**
 `docker logs blfp-release-mirror` 看日志；常见原因是 `ASSET_REGEX` 写成了非法正则（启动时会直接报错并指出变量名），或数据卷没有写权限（容器内以 `node` 用户运行，`/data` 需要可写）。
