@@ -106,9 +106,35 @@ jobs:
           echo "--- 容器日志:"; docker logs mirror
           docker rm -f mirror
 
-  # 创建 Release，并附上可直接解压运行的源码包
+  # 导出离线镜像包：镜像源都拉不动时，docker load 直接导入，无需任何仓库
+  offline-image:
+    needs: publish-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: 导出 amd64 / arm64 镜像包
+        run: |
+          VER="${{ needs.publish-image.outputs.version }}"
+          [ -z "${VER}" ] && VER="${GITHUB_REF_NAME#v}"
+          for ARCH in amd64 arm64; do
+            docker pull --platform "linux/${ARCH}" "${IMAGE}:${VER}"
+            # 同一 tag 换平台会覆盖，所以每拉一个就立刻导出
+            docker save "${IMAGE}:${VER}" | gzip -9 > "blfp-release-mirror-${VER}-linux-${ARCH}.tar.gz"
+          done
+          sha256sum blfp-release-mirror-*.tar.gz > "blfp-release-mirror-${VER}-images.sha256"
+          cat "blfp-release-mirror-${VER}-images.sha256"
+          ls -lh blfp-release-mirror-*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-images
+          path: |
+            blfp-release-mirror-*.tar.gz
+            blfp-release-mirror-*-images.sha256
+          retention-days: 7
+
+  # 创建 Release，并附上可直接解压运行的源码包 + 离线镜像包
   release:
-    needs: [publish-image, smoke-test]
+    needs: [publish-image, smoke-test, offline-image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -129,7 +155,17 @@ jobs:
           cat > NOTES.md <<EOF
           Docker 镜像：\`${IMAGE}:${VER}\`（多架构：linux/amd64 + linux/arm64，另有 \`latest\`）
 
-          ## 一键安装
+          ## 最快：一键脚本（自动挑延迟最低的镜像源）
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh | bash
+          \`\`\`
+
+          脚本会逐个探测镜像源（含国内加速源）：**先确认真的能取到镜像数据（manifest + layer），
+          再按实测延迟排序**，自动用最快的源拉取并启动容器；某个源拉取失败会自动降级到下一个。
+          只想看各源延迟：\`bash install.sh --list\`；想先预览命令：\`bash install.sh --dry-run\`。
+
+          ## 或手动拉镜像（下面用官方地址，也可换成任意加速源前缀）
 
           \`\`\`bash
           # 1) 拉镜像并运行（数据存在命名卷 blfp-data 里）
@@ -158,21 +194,44 @@ jobs:
           docker compose -f docker-compose.ghcr.yml up -d
           \`\`\`
 
+          ## 完全离线安装（不需要任何镜像源）
+
+          \`\`\`bash
+          # 下载本页附件里的镜像包后导入（arm64 设备换成 -arm64）
+          gunzip -c blfp-release-mirror-${VER}-linux-amd64.tar.gz | docker load
+          # 导入后镜像名就是 ${IMAGE}:${VER}，再用上面的 docker run 启动即可
+          \`\`\`
+
           ## 附件
 
+          - \`install.sh\` 在仓库里：\`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/install.sh | bash\`
           - \`blfp-release-mirror-${TAG}.tar.gz\`：完整源码包（解压后 \`node src/server.js\` 即可运行，无需 npm install）
+          - \`blfp-release-mirror-${VER}-linux-amd64.tar.gz\` / \`-arm64.tar.gz\`：离线镜像包（\`docker load\` 直接导入）
+          - \`blfp-release-mirror-${VER}-images.sha256\`：离线镜像包的 sha256 校验值
 
           环境变量表、API 文档、常见问题见仓库 README。
           EOF
           cat NOTES.md
 
-      - name: 创建 Release
+      - uses: actions/download-artifact@v4
+        with:
+          name: offline-images
+
+      - name: 创建或更新 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          gh release create "$TAG" \
-            "blfp-release-mirror-${TAG}.tar.gz" \
-            --title "blfp-release-mirror ${TAG}" \
-            --notes-file NOTES.md \
-            --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在，补充/刷新附件"
+            gh release edit "$TAG" --notes-file NOTES.md
+            gh release upload "$TAG" blfp-release-mirror-*.tar.gz blfp-release-mirror-*.sha256 --clobber
+          else
+            gh release create "$TAG" \
+              blfp-release-mirror-*.tar.gz blfp-release-mirror-*.sha256 \
+              --title "blfp-release-mirror ${TAG}" \
+              --notes-file NOTES.md \
+              --verify-tag
+          fi
+          echo "--- 发布产物:"
+          gh release view "$TAG" --json assets --jq '.assets[] | "  \(.name)  \(.size) bytes"'

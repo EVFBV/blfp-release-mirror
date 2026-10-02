@@ -26,6 +26,21 @@ jobs:
       - name: 运行测试
         run: node --test test/*.test.js
 
+  # 一键安装脚本的静态检查（脚本会被用户直接 curl | bash 执行，必须挡住语法/明显错误）
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash 语法检查
+        run: bash -n install.sh
+
+      - name: shellcheck
+        run: shellcheck -S warning install.sh
+
+      - name: 帮助信息可用
+        run: bash install.sh --help | head -20
+
   docker:
     runs-on: ubuntu-latest
     steps:

@@ -35,9 +35,35 @@
 
 ## 安装
 
-### 方式一：直接拉现成镜像（免构建，推荐）
+### 推荐：一键脚本（自动挑延迟最低的镜像源）
 
-镜像已发布在 GitHub Container Registry，多架构（`linux/amd64` + `linux/arm64`，群晖/NAS/树莓派都能用）：
+```bash
+curl -fsSL https://raw.githubusercontent.com/EVFBV/blfp-release-mirror/main/install.sh | bash
+```
+
+脚本会先**验证每个镜像源真的能取到镜像**（manifest + layer 数据，而不是只 ping 通），再按实测延迟排序，
+自动用最快的源拉取、打回标准名字并启动容器；某个源拉取失败会自动降级到下一个。国内网络下不需要手工配加速。
+
+```bash
+bash install.sh --list                       # 只探测，打印各源延迟与可用性
+bash install.sh --dry-run                    # 只打印将要执行的命令
+bash install.sh --source ghcr.nju.edu.cn     # 强制指定某个源
+bash install.sh --tag latest --port 9000     # 换标签/端口
+bash install.sh --quick                      # 跳过 layer 数据校验（更快）
+# 内网 Harbor 等自定义源：
+BLFP_EXTRA_SOURCES='公司内网|harbor.corp/blfp-release-mirror|harbor.corp|内网仓库' bash install.sh
+```
+
+实测结论（本机到各源的真实探测）：`ghcr.io`、`ghcr.nju.edu.cn`（南京大学）、`ghcr.dockerproxy.net`
+三个源能取到镜像且 digest 与官方一致；`ghcr.m.daocloud.io`、`ghcr.chenby.cn`、`ghcr.geekery.cn`
+以及 Docker Hub 系加速源（`docker.m.daocloud.io`、`docker.1ms.run`、`dockerpull.org`、`hub.rat.dev`）
+当前取不到这个镜像，会被自动跳过并给出原因（如 `manifest 返回 HTTP 401`）。
+
+### 方式一：直接拉现成镜像（免构建）
+
+镜像已发布在 GitHub Container Registry，多架构（`linux/amd64` + `linux/arm64`，群晖/NAS/树莓派都能用）。
+拉不动时把 `ghcr.io` 换成加速源前缀即可，例如 `ghcr.nju.edu.cn/evfbv/blfp-release-mirror:1.0.0` 或
+`ghcr.dockerproxy.net/evfbv/blfp-release-mirror:1.0.0`（digest 与官方完全一致）。
 
 ```bash
 docker run -d --name blfp-release-mirror --restart unless-stopped \
