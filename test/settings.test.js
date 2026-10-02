@@ -21,6 +21,8 @@ const fakeB = await startFakeGitHub({
   releases: [releaseSpec('v2.0.0-pre', { prerelease: true, assets: [repoBAsset], publishedAt: '2026-10-02T00:00:00Z' })],
 });
 
+// 测试一律直连，不探测真实加速源（镜像逻辑由 mirrors.test.js 用本地假源专门验证）
+process.env.MIRROR_MODE = 'off';
 process.env.GITHUB_REPO = 'owner-aaa/app-a';
 process.env.GITHUB_API_BASE = fake.baseUrl;
 process.env.DATA_DIR = tmpDir;

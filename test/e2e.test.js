@@ -20,6 +20,8 @@ const fake = await startFakeGitHub({
   ],
 });
 
+// 测试一律直连，不探测真实加速源（镜像逻辑由 mirrors.test.js 用本地假源专门验证）
+process.env.MIRROR_MODE = 'off';
 process.env.GITHUB_REPO = 'test/repo';
 process.env.GITHUB_API_BASE = fake.baseUrl;
 process.env.DATA_DIR = tmpDir;

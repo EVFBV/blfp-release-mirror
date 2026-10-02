@@ -1,5 +1,7 @@
 import { config } from './config.js';
 import { log } from './logger.js';
+import { applyMirror, isDirect, mirrorLabel } from './mirror-list.js';
+import { apiPool, apiSampleUrl } from './mirrors.js';
 import { sanitizeFileName } from './util.js';
 
 export class GitHubError extends Error {
@@ -25,24 +27,58 @@ function apiHeaders(extra = {}) {
 
 /**
  * 拉取 releases 列表（GitHub 默认就会返回 pre-release，draft 需要权限）。
+ *
+ * 会按配置走加速源：先探测出延迟最低且能代理 api.github.com 的源，
+ * 失败则自动换下一个源，最后兜底直连 GitHub。
  */
-export async function listReleases({ perPage = 30, timeoutMs = 30000 } = {}) {
+export async function listReleases({ perPage = 30, timeoutMs = 30000, pool = null } = {}) {
   const url = `${config.apiBase}/repos/${config.repo}/releases?per_page=${Math.min(100, Math.max(1, perPage))}`;
-  const res = await fetch(url, { headers: apiHeaders(), signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const remaining = res.headers.get('x-ratelimit-remaining');
-    const reset = res.headers.get('x-ratelimit-reset');
-    const rateLimited = (res.status === 403 || res.status === 429) && remaining === '0';
-    const resetAt = reset ? new Date(Number(reset) * 1000).toISOString() : null;
-    const detail = rateLimited
-      ? `GitHub API 速率限制已用尽，${resetAt || '稍后'} 后恢复；建议设置 GITHUB_TOKEN`
-      : `GitHub API 请求失败: ${res.status} ${res.statusText} ${body.slice(0, 200)}`;
-    throw new GitHubError(detail, { status: res.status, rateLimited, resetAt });
+  const apiPoolRef = pool ?? apiPool();
+
+  let candidates;
+  try {
+    candidates = await apiPoolRef.order(apiSampleUrl());
+  } catch (err) {
+    log.warn(`API 加速源探测失败，改用直连: ${err.message}`);
+    candidates = [''];
   }
-  const data = await res.json();
-  if (!Array.isArray(data)) throw new GitHubError('GitHub API 返回了非预期的数据格式');
-  return data.filter((r) => r && (config.includeDraft || !r.draft));
+  if (candidates.length === 0) candidates = [''];
+
+  let lastError = null;
+  for (const prefix of candidates) {
+    try {
+      const res = await fetch(applyMirror(prefix, url), { headers: apiHeaders(), signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        const remaining = res.headers.get('x-ratelimit-remaining');
+        const reset = res.headers.get('x-ratelimit-reset');
+        const rateLimited = (res.status === 403 || res.status === 429) && remaining === '0';
+        const resetAt = reset ? new Date(Number(reset) * 1000).toISOString() : null;
+        const detail = rateLimited
+          ? `GitHub API 速率限制已用尽，${resetAt || '稍后'} 后恢复；建议设置 GITHUB_TOKEN`
+          : `GitHub API 请求失败(${mirrorLabel(prefix)}): ${res.status} ${res.statusText} ${body.slice(0, 200)}`;
+        lastError = new GitHubError(detail, { status: res.status, rateLimited, resetAt });
+        apiPoolRef.reportFailure(prefix);
+        log.warn(`${detail}${candidates.indexOf(prefix) < candidates.length - 1 ? '，尝试下一个源' : ''}`);
+        continue;
+      }
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        lastError = new GitHubError('GitHub API 返回了非预期的数据格式');
+        apiPoolRef.reportFailure(prefix);
+        continue;
+      }
+      apiPoolRef.reportSuccess(prefix);
+      if (!isDirect(prefix)) log.info(`Release 列表来自加速源：${mirrorLabel(prefix)}`);
+      return data.filter((r) => r && (config.includeDraft || !r.draft));
+    } catch (err) {
+      lastError = err instanceof GitHubError ? err : new GitHubError(`请求 GitHub API 失败(${mirrorLabel(prefix)}): ${err.message}`);
+      apiPoolRef.reportFailure(prefix);
+      log.warn(`${lastError.message}${candidates.indexOf(prefix) < candidates.length - 1 ? '，尝试下一个源' : ''}`);
+    }
+  }
+
+  throw lastError ?? new GitHubError('无法获取 Release 列表：所有加速源与直连都失败');
 }
 
 /** 解析 tag 成可比较结构，例如 v2.3.21-pre -> { nums:[2,3,21], pre:['pre'] } */

@@ -85,6 +85,10 @@ function buildManifest(selected, results, previousManifest) {
           mtimeMs: ok ? result.mtimeMs ?? recorded?.mtimeMs ?? null : null,
           updatedAt: asset.updatedAt,
           sourceUrl: asset.htmlUrl,
+          // 记录这次实际用的加速源，便于排查"这个文件是从哪来的"
+          mirror: ok ? result.mirror ?? recorded?.mirror ?? null : null,
+          resumedFrom: ok ? result.resumedFrom ?? 0 : 0,
+          mirrorsTried: ok && Array.isArray(result.mirrorsTried) ? result.mirrorsTried : undefined,
         };
       }),
     })),

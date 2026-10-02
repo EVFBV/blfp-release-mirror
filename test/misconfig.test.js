@@ -6,6 +6,8 @@ import test from 'node:test';
 
 const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'blfp-misconfig-'));
 
+// 测试一律直连，不探测真实加速源（镜像逻辑由 mirrors.test.js 用本地假源专门验证）
+process.env.MIRROR_MODE = 'off';
 process.env.DATA_DIR = tmpDir;
 process.env.SYNC_ON_START = 'false';
 process.env.SYNC_INTERVAL_SECONDS = '0';

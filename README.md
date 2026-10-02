@@ -24,6 +24,7 @@
 | 智能判断"最新" | 按语义化版本比较（`v2.3.21-pre > v2.3.20-pre > v2.3.19`），不依赖 API 返回顺序 |
 | 删除旧版本 | `KEEP_VERSIONS=N` 只保留最新 N 个版本，其余文件自动清理；残留半成品 `.part` 也会清理 |
 | 下载可靠性 | 断点续传（HTTP Range）、sha256 校验（用 GitHub 提供的 digest）、失败重试（指数退避）、卡死自动中断重试 |
+| **拉取自动走加速源** | 拉 Release 列表与下载资产时，先探测各加速源（含国内源），**自动用延迟最低且真能取到数据的那一个**；某源中途失败自动换源并**接着续传**；也可固定顺序或完全关闭 |
 | 浏览器直接访问 | 打开首页即可看到所有版本和文件并点击下载；`/latest` 永远指向最新版 |
 | API 下载 | `GET /api/latest`、`GET /api/files` 等 JSON 接口，`/download/<文件名>` 可直接下载 |
 | 启动即同步 | 容器启动后立刻同步一次，不用等一个轮询周期 |
@@ -141,6 +142,53 @@ DATA_DIR=./data PORT=8080 node src/server.js
 
 - **Release 页**：<https://github.com/EVFBV/blfp-release-mirror/releases> —— 每个版本都附带 `blfp-release-mirror-vX.Y.Z.tar.gz` 源码包和安装说明
 - **镜像**：<https://github.com/EVFBV/blfp-release-mirror/pkgs/container/blfp-release-mirror>
+
+---
+
+## 加速源（镜像）：程序拉 Release 时自动走最快的源
+
+直连 GitHub 慢或者不通时，程序会自己走加速源 —— **不用改 Docker 配置，也不用在 NAS 上装代理**：
+
+```dotenv
+MIRROR_MODE=auto          # auto=自动探测选最快（默认）｜fixed=按列表顺序｜off=只用直连
+ASSET_MIRRORS=https://gh-proxy.com/,https://ghfast.top/,https://gh.llkk.cc/,https://ghproxy.net/
+API_MIRRORS=https://gh-proxy.com/
+```
+
+- **两类源分开配置**：能下资产和能代理 `api.github.com` 的源不是同一批（实测 `ghfast.top`、`gh.llkk.cc` 能下资产但 API 返回 403），所以分开探测、分开降级。
+- **判断"可用"的标准是真的能取到数据**：探测时会取 1KB 实际数据并确认支持 Range，而不是只 ping 通；探测不通过的源不会被用来下载。
+- **换源会续传**：某个源下到一半断了，会自动换下一个源并从已下载的 `.part` 继续，不用从头下；最终仍按 GitHub 的 sha256 校验。
+- **失败自动降级**：源失败会被冷却 5 分钟并排到后面；所有加速源都不可用时自动回落到直连 GitHub。
+- **运行时改**：网页控制台里直接改（含"加速源测速"按钮），或走 API：
+
+```bash
+curl http://localhost:8080/api/mirrors                      # 看当前用哪个源、各源延迟
+curl -X POST http://localhost:8080/api/mirrors/probe \
+  -H 'Content-Type: application/json' -d '{"kind":"both"}'   # 立即重新测速
+
+# 只固定用最快的那个源，或彻底关掉镜像
+curl -X POST http://localhost:8080/api/settings -H 'Content-Type: application/json' \
+  -d '{"mirrorMode":"fixed","assetMirrors":["https://gh-proxy.com/","direct"]}'
+```
+
+实测参考（2026-10，本机到各源的延迟，**你的网络下数字会不同，程序每次都是现场测**）：
+
+| 加速源 | 资产下载（含续传） | Release API |
+| --- | --- | --- |
+| `gh-proxy.com` | ✅ 支持续传 | ✅ 可用 |
+| `ghfast.top` | ✅ 支持续传 | ❌ 403 |
+| `gh.llkk.cc` | ✅ 支持续传 | ❌ 403 |
+| `ghproxy.net` | ✅ 支持续传 | ❌ 403 |
+| 直连 GitHub | ✅ 支持续传 | ✅ 可用 |
+
+自定义源（内网 Harbor、自建反代）也支持，两种写法都认：
+
+```dotenv
+# 前缀式
+ASSET_MIRRORS=https://my-proxy.example.com/
+# 模板式（{url} 会被替换成原始地址）
+ASSET_MIRRORS=https://my-proxy.example.com/fetch?target={url}
+```
 
 ---
 

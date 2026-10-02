@@ -85,9 +85,11 @@ export function parseBool(value, fallback) {
   return /^(1|true|yes|y|on)$/i.test(String(value).trim());
 }
 
-/** 环境变量 -> 数字（带默认值与上下限） */
+/** 环境变量 -> 数字（带默认值与上下限）；未设置/空白一律用默认值，而不是被下限夹住 */
 export function parseNumber(value, fallback, { min = -Infinity, max = Infinity } = {}) {
-  const n = Number(String(value ?? '').trim());
+  const text = String(value ?? '').trim();
+  if (text === '') return fallback;
+  const n = Number(text);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
 }

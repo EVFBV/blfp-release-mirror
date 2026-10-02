@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'blfp-unit-'));
+// 测试一律直连，不探测真实加速源（镜像逻辑由 mirrors.test.js 用本地假源专门验证）
+process.env.MIRROR_MODE = 'off';
 process.env.DATA_DIR = tmpDir;
 process.env.GITHUB_REPO = 'test/repo';
 process.env.SYNC_ON_START = 'false';
@@ -318,4 +320,71 @@ test('downloadAsset: 未完成的 .part 收敛为完整文件（大小校验通�
   } finally {
     await fake.close();
   }
+});
+
+
+test('parseNumber：未设置环境变量时必须用默认值（曾经会被下限夹成最小值）', async (t) => {
+  const { parseNumber } = await import('../src/util.js');
+
+  await t.test('未设置 / 空白 / 非法值都回退到默认值', () => {
+    assert.equal(parseNumber(undefined, 8080, { min: 1, max: 65535 }), 8080);
+    assert.equal(parseNumber('', 8080, { min: 1, max: 65535 }), 8080);
+    assert.equal(parseNumber('   ', 8080, { min: 1, max: 65535 }), 8080);
+    assert.equal(parseNumber('abc', 8080, { min: 1, max: 65535 }), 8080);
+    assert.equal(parseNumber(null, 600, { min: 0, max: 86400 }), 600);
+  });
+
+  await t.test('显式给值仍按上下限夹取', () => {
+    assert.equal(parseNumber('0', 8080, { min: 1, max: 65535 }), 1);
+    assert.equal(parseNumber('99999', 8080, { min: 1, max: 65535 }), 65535);
+    assert.equal(parseNumber('9000', 8080, { min: 1, max: 65535 }), 9000);
+    assert.equal(parseNumber('0', 600, { min: 0, max: 86400 }), 0, '显式 0 是有效值（例如关掉定时同步）');
+  });
+});
+
+test('配置默认值：干净环境下启动的默认值必须正确（回归：端口曾变 1、定时同步曾变 0）', async (t) => {
+  const { execFile } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+
+  // 用一个"几乎空"的环境起一个子进程，真实模拟 README 里的 `node src/server.js` 用法
+  const readConfig = () =>
+    new Promise((resolve, reject) => {
+      const code = "import('./src/config.js').then(({config}) => console.log(JSON.stringify({" +
+        'port:config.port,downloadConcurrency:config.downloadConcurrency,maxRetries:config.maxRetries,' +
+        'stallTimeoutSeconds:config.stallTimeoutSeconds,syncIntervalSeconds:config.syncIntervalSeconds,' +
+        'keepVersions:config.keepVersions,mirrorMode:config.mirrorMode,probeTimeoutMs:config.mirrorProbeTimeoutMs,' +
+        'probeCacheMs:config.mirrorProbeCacheMs,assetMirrors:config.assetMirrors,apiMirrors:config.apiMirrors' +
+        '})));';
+      execFile(
+        process.execPath,
+        ['--input-type=module', '-e', code],
+        { cwd: repoRoot, env: { PATH: process.env.PATH, HOME: process.env.HOME }, timeout: 30000 },
+        (err, stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve(JSON.parse(stdout))),
+      );
+    });
+
+  let cfg;
+  await t.test('子进程能正常加载配置', async () => {
+    cfg = await readConfig();
+    assert.ok(cfg, '应能读到配置');
+  });
+
+  await t.test('数值型配置必须用默认值，而不是被下限夹成最小值', () => {
+    assert.equal(cfg.port, 8080, '端口默认必须是 8080（曾被夹成 1，非 root 直接启动失败）');
+    assert.equal(cfg.downloadConcurrency, 2);
+    assert.equal(cfg.maxRetries, 3);
+    assert.equal(cfg.stallTimeoutSeconds, 60);
+    assert.equal(cfg.syncIntervalSeconds, 600, '定时同步默认必须是 600（曾被夹成 0 = 关闭自动拉取）');
+    assert.equal(cfg.keepVersions, 1);
+  });
+
+  await t.test('加速源默认：auto 模式 + 内置源列表 + 合理的探测超时', () => {
+    assert.equal(cfg.mirrorMode, 'auto');
+    assert.ok(cfg.probeTimeoutMs >= 3000, `探测超时过小会把可用源误判为超时，实际 ${cfg.probeTimeoutMs}ms`);
+    assert.ok(cfg.probeCacheMs >= 60000, '探测缓存过短会导致每次下载都重新探测');
+    assert.ok(cfg.assetMirrors.length >= 2, '默认应带若干资产加速源');
+    assert.ok(cfg.assetMirrors.every((m) => /^https:\/\//.test(m)));
+    assert.ok(cfg.apiMirrors.length >= 1, '默认应带 API 加速源');
+  });
 });

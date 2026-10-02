@@ -2,6 +2,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { config, normalizeRepo } from './config.js';
 import { log } from './logger.js';
+import { parseMirrors } from './mirror-list.js';
+import { resetMirrorPools } from './mirrors.js';
 import { parseRegex } from './util.js';
 
 export const SETTINGS_PATH = path.join(config.dataDir, 'settings.json');
@@ -33,6 +35,12 @@ const FIELDS = {
   stallTimeoutSeconds: { kind: 'int', min: 10, max: 3600 },
   publicBaseUrl: { kind: 'url', nullable: true },
   corsOrigin: { kind: 'string' },
+  /** 加速源：auto=自动探测选最快 / fixed=按顺序 / off=仅直连 */
+  mirrorMode: { kind: 'enum', values: ['auto', 'fixed', 'off'] },
+  /** 资产下载加速源列表（逗号分隔，direct 表示直连） */
+  assetMirrors: { kind: 'mirrors' },
+  /** API 加速源列表 */
+  apiMirrors: { kind: 'mirrors' },
 };
 
 export const EDITABLE_FIELDS = Object.keys(FIELDS);
@@ -52,6 +60,9 @@ const envDefaults = Object.freeze({
   stallTimeoutSeconds: config.stallTimeoutSeconds,
   publicBaseUrl: config.publicBaseUrl || null,
   corsOrigin: config.corsOrigin,
+  mirrorMode: config.mirrorMode,
+  assetMirrors: config.assetMirrors,
+  apiMirrors: config.apiMirrors,
 });
 
 /** settings.json 里存的内容（原样保存字符串/数字/布尔） */
@@ -115,6 +126,19 @@ function coerce(field, value, spec) {
       buildRegex(text, field); // 校验
       return { value: text, raw: text };
     }
+    case 'enum': {
+      const text = String(value).trim().toLowerCase();
+      if (!spec.values.includes(text)) {
+        throw new SettingsError(`${field} 只能是 ${spec.values.join(' / ')}，当前值: ${value}`, { field });
+      }
+      return { value: text, raw: text };
+    }
+    case 'mirrors': {
+      // 既接受数组，也接受逗号分隔字符串；返回统一为数组
+      const list = parseMirrors(Array.isArray(value) ? value : String(value).split(/[,\n]/), []);
+      if (list.length === 0) throw new SettingsError(`${field} 不能为空（可填 direct 表示直连）`, { field });
+      return { value: list, raw: list };
+    }
     default: {
       const text = String(value).trim();
       return { value: text, raw: text };
@@ -137,7 +161,12 @@ function applyToConfig(settings) {
   config.stallTimeoutSeconds = settings.stallTimeoutSeconds;
   config.publicBaseUrl = settings.publicBaseUrl || '';
   config.corsOrigin = settings.corsOrigin;
+  config.mirrorMode = settings.mirrorMode;
+  config.assetMirrors = [...settings.assetMirrors];
+  config.apiMirrors = [...settings.apiMirrors];
   raw = { ...settings };
+  // 加速源变了要重建池子，让新配置立即生效
+  resetMirrorPools();
 }
 
 /** env 默认值 + settings.json 覆盖 = 生效配置 */

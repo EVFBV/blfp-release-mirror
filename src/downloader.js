@@ -6,6 +6,8 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { config } from './config.js';
 import { log } from './logger.js';
+import { applyMirror, mirrorLabel } from './mirror-list.js';
+import { assetPool, setAssetSampleUrl } from './mirrors.js';
 import { fileSha256, humanBytes, sleep, updateHashFromFile } from './util.js';
 
 /** 下载期间的进度回调（由 sync 层注入，用于 /api/status 显示） */
@@ -34,30 +36,79 @@ function downloadHeaders({ rangeStart = 0 } = {}) {
 }
 
 /**
- * 单个资产的下载：支持断点续传（.part 文件 + Range）、sha256 校验、卡死看门狗、失败重试。
+ * 单个资产的下载：自动挑加速源、支持断点续传（.part + Range）、sha256 校验、卡死看门狗、失败重试。
+ *
+ * 加速源策略：先让镜像池给出「按实测延迟排序」的候选源（含直连兜底），
+ * 依次尝试；某个源失败就换下一个源，已下载的 .part 保留，
+ * 所以换源后是接着下而不是从头下（各源提供的是同一份字节）。
  */
 export async function downloadAsset(asset, destPath) {
   const partPath = `${destPath}.part`;
-  let lastError = null;
+  const originalUrl = asset.downloadUrl;
+  const pool = asset.mirrorPool ?? assetPool();
+  setAssetSampleUrl(originalUrl);
 
-  for (let attempt = 1; attempt <= config.maxRetries; attempt += 1) {
-    try {
-      const result = await downloadOnce(asset, destPath, partPath, attempt);
-      return result;
-    } catch (err) {
-      lastError = err;
-      // 校验失败说明 .part 内容已损坏，直接丢弃后重试
-      if (err.code === 'CHECKSUM_MISMATCH' || err.code === 'SIZE_MISMATCH') {
-        await fsp.rm(partPath, { force: true }).catch(() => {});
+  let candidates;
+  try {
+    candidates = await pool.order(originalUrl);
+  } catch (err) {
+    log.warn(`加速源探测失败，改用直连: ${err.message}`);
+    candidates = [''];
+  }
+  if (candidates.length === 0) candidates = [''];
+
+  let lastError = null;
+  const tried = [];
+
+  for (const prefix of candidates) {
+    const url = applyMirror(prefix, originalUrl);
+    tried.push(mirrorLabel(prefix));
+    log.info(`下载 ${asset.fileName}（源：${mirrorLabel(prefix)}）`);
+
+    let mirrorFailed = false;
+    for (let attempt = 1; attempt <= config.maxRetries; attempt += 1) {
+      try {
+        const result = await downloadOnce({ ...asset, downloadUrl: url, mirror: mirrorLabel(prefix) }, destPath, partPath, attempt);
+        pool.reportSuccess(prefix);
+        return { ...result, mirror: mirrorLabel(prefix), mirrorsTried: tried };
+      } catch (err) {
+        lastError = err;
+        // 校验失败说明 .part 内容已损坏（可能是换了源但内容不一致），丢弃后重试
+        if (err.code === 'CHECKSUM_MISMATCH' || err.code === 'SIZE_MISMATCH') {
+          await fsp.rm(partPath, { force: true }).catch(() => {});
+        }
+        if (!err.retryable) {
+          mirrorFailed = true;
+          break;
+        }
+        if (attempt >= config.maxRetries) break;
+        const delay = Math.min(30000, 1000 * 2 ** (attempt - 1));
+        log.warn(
+          `下载失败，${Math.round(delay / 1000)}s 后重试 (${attempt}/${config.maxRetries}) ` +
+            `[${mirrorLabel(prefix)}]: ${asset.fileName} - ${err.message}`,
+        );
+        progressHook({
+          phase: 'retry-wait',
+          fileName: asset.fileName,
+          attempt,
+          error: err.message,
+          mirror: mirrorLabel(prefix),
+        });
+        await sleep(delay);
       }
-      if (!err.retryable || attempt >= config.maxRetries) break;
-      const delay = Math.min(30000, 1000 * 2 ** (attempt - 1));
-      log.warn(
-        `下载失败，${Math.round(delay / 1000)}s 后重试 (${attempt}/${config.maxRetries}): ${asset.fileName} - ${err.message}`,
-      );
-      progressHook({ phase: 'retry-wait', fileName: asset.fileName, attempt, error: err.message });
-      await sleep(delay);
     }
+
+    pool.reportFailure(prefix);
+    if (candidates.indexOf(prefix) < candidates.length - 1) {
+      log.warn(`源 ${mirrorLabel(prefix)} 下载失败（${lastError?.message ?? '未知原因'}），自动切换到下一个源`);
+      progressHook({
+        phase: 'switch-mirror',
+        fileName: asset.fileName,
+        error: lastError?.message ?? null,
+        mirror: mirrorLabel(prefix),
+      });
+    }
+    void mirrorFailed;
   }
 
   // 彻底失败：清理 .part，避免下次误以为可以续传
@@ -87,7 +138,7 @@ async function downloadOnce(asset, destPath, partPath, attempt) {
     /* 没有半成品，正常从 0 开始 */
   }
 
-  // 看门狗：超过 stallTimeoutSeconds 没收到任何数据就中断，交给重试逻辑
+  // 看门狗：超过 stallTimeoutSeconds 没收到任何数据就中断，交给重试/换源逻辑
   const controller = new AbortController();
   let stalled = false;
   let stallTimer = null;
@@ -109,7 +160,7 @@ async function downloadOnce(asset, destPath, partPath, attempt) {
 
     if (!res.ok) {
       if (res.status === 404 || res.status === 403) {
-        throw new DownloadError(`HTTP ${res.status} ${res.statusText}（资产可能已被删除或需要 GITHUB_TOKEN）`, {
+        throw new DownloadError(`HTTP ${res.status} ${res.statusText}（资产可能已被删除、需要 GITHUB_TOKEN，或该加速源不支持此文件）`, {
           retryable: false,
         });
       }
@@ -130,7 +181,7 @@ async function downloadOnce(asset, destPath, partPath, attempt) {
       }
       resumedFrom = start;
       sinkHash = resumeHash; // 续用已算好的前缀哈希（注意不能 finalize）
-      log.info(`断点续传 ${asset.fileName}：从 ${humanBytes(start)} 继续`);
+      log.info(`断点续传 ${asset.fileName}：从 ${humanBytes(start)} 继续（源：${asset.mirror ?? '直连'}）`);
     } else if (start > 0) {
       // 服务端不支持 Range（200），重新开始
       await fsp.rm(partPath, { force: true });
@@ -146,6 +197,7 @@ async function downloadOnce(asset, destPath, partPath, attempt) {
       total: asset.size || 0,
       attempt,
       resumedFrom,
+      mirror: asset.mirror ?? null,
     });
 
     const out = fs.createWriteStream(partPath, { flags: start > 0 ? 'a' : 'w' });
@@ -167,6 +219,7 @@ async function downloadOnce(asset, destPath, partPath, attempt) {
           total: asset.size || 0,
           attempt,
           resumedFrom,
+          mirror: asset.mirror ?? null,
         });
       }
     });
@@ -196,9 +249,17 @@ async function downloadOnce(asset, destPath, partPath, attempt) {
     const seconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
     log.info(
       `下载完成 ${asset.fileName} (${humanBytes(st.size)}) 用时 ${seconds.toFixed(1)}s` +
-        `${resumedFrom ? `，其中续传 ${humanBytes(resumedFrom)}` : ''}${asset.sha256 ? '，校验通过' : ''}`,
+        `${resumedFrom ? `，其中续传 ${humanBytes(resumedFrom)}` : ''}${asset.sha256 ? '，校验通过' : ''}` +
+        `${asset.mirror ? `，源：${asset.mirror}` : ''}`,
     );
-    progressHook({ phase: 'done', fileName: asset.fileName, received: st.size, total: asset.size || st.size, attempt });
+    progressHook({
+      phase: 'done',
+      fileName: asset.fileName,
+      received: st.size,
+      total: asset.size || st.size,
+      attempt,
+      mirror: asset.mirror ?? null,
+    });
 
     return {
       fileName: path.basename(destPath),

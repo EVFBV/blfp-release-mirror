@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, publicConfig } from './config.js';
 import { GitHubError } from './github.js';
+import { mirrorSnapshot, probeNow } from './mirrors.js';
 import { log } from './logger.js';
 import * as settings from './settings.js';
 import * as store from './store.js';
@@ -274,6 +275,12 @@ async function handleApi(req, res, url) {
       version: APP_VERSION,
       time: nowIso(),
       repo: config.repo,
+      mirrors: {
+        mode: config.mirrorMode,
+        asset: mirrorSnapshot().asset.chosen,
+        api: mirrorSnapshot().api.chosen,
+        detail: '/api/mirrors',
+      },
       sync: state,
       storage: {
         dataDir: config.dataDir,
@@ -291,6 +298,8 @@ async function handleApi(req, res, url) {
         check: '/api/check',
         sync: 'POST /api/sync',
         settings: '/api/settings',
+        mirrors: '/api/mirrors',
+        mirrorProbe: 'POST /api/mirrors/probe',
         directFile: '/download/<fileName>',
         alwaysLatest: '/latest',
       },
@@ -348,6 +357,34 @@ async function handleApi(req, res, url) {
       }
       log.error(`更新运行时配置失败: ${err.message}`);
       return sendJson(req, res, 500, { error: 'settings_failed', message: err.message });
+    }
+  }
+
+  // 加速源（镜像）状态与测速
+  if (pathname === '/api/mirrors' || pathname === '/api/mirrors/probe') {
+    if (pathname === '/api/mirrors' && (req.method === 'GET' || req.method === 'HEAD')) {
+      return sendJson(req, res, 200, {
+        ...mirrorSnapshot(),
+        note: 'mode=auto 时每次拉取前探测并选延迟最低的可用源；POST /api/mirrors/probe 可强制立即重测',
+      });
+    }
+    if (req.method !== 'POST') {
+      return sendJson(req, res, 405, { error: 'method_not_allowed', message: '请使用 GET /api/mirrors 或 POST /api/mirrors/probe' });
+    }
+    if (!authorize(req, res, { write: true })) return undefined;
+
+    let body = {};
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      return sendJson(req, res, 400, { error: 'bad_request', message: `请求体解析失败: ${err.message}` });
+    }
+    const kind = ['asset', 'api', 'both'].includes(body?.kind) ? body.kind : 'both';
+    try {
+      const result = await probeNow(kind);
+      return sendJson(req, res, 200, { ok: true, mode: config.mirrorMode, ...result });
+    } catch (err) {
+      return sendJson(req, res, 502, { error: 'mirror_probe_failed', message: `加速源探测失败: ${err.message}` });
     }
   }
 
@@ -460,6 +497,7 @@ async function handleApi(req, res, url) {
     message: `未知接口: ${pathname}`,
     endpoints: [
       '/api/status',
+      '/api/mirrors',
       '/api/releases',
       '/api/latest',
       '/api/files',

@@ -143,12 +143,31 @@
             <div class="k">包含 pre-release</div>
             <div style="margin-top:10px"><input id="set-prerelease" type="checkbox" /> 包含预发布版（pre）</div>
           </label>
+          <label class="card" style="display:block">
+            <div class="k">加速源模式</div>
+            <select id="set-mirrormode" style="width:100%;margin-top:6px">
+              <option value="auto">auto：拉取前自动探测，用延迟最低的源</option>
+              <option value="fixed">fixed：按下面顺序使用，不探测</option>
+              <option value="off">off：只用直连 GitHub</option>
+            </select>
+          </label>
+          <label class="card" style="display:block">
+            <div class="k">资产下载加速源（逗号分隔，direct = 直连）</div>
+            <input id="set-assetmirrors" type="text" placeholder="https://gh-proxy.com/,direct" style="width:100%;margin-top:6px" />
+          </label>
+          <label class="card" style="display:block">
+            <div class="k">Release API 加速源（逗号分隔）</div>
+            <input id="set-apimirrors" type="text" placeholder="https://gh-proxy.com/,direct" style="width:100%;margin-top:6px" />
+          </label>
         </div>
         <div class="row">
           <button id="settings-save">保存并立即同步</button>
           <button class="ghost" id="settings-reset">恢复环境变量默认</button>
+          <button class="ghost" id="mirror-probe">加速源测速</button>
           <span class="muted" id="settings-msg"></span>
         </div>
+        <div class="muted" id="mirror-status" style="margin-top:8px"></div>
+        <pre id="mirror-results" class="mono" style="margin-top:8px;white-space:pre-wrap"></pre>
         <div class="muted mono" id="settings-file" style="margin-top:8px"></div>
       </div>
 
@@ -304,7 +323,18 @@ curl -X POST ${baseUrl}/api/settings \\
   -d '{"repo":"owner/repo","includePrerelease":true,"keepVersions":1}'
 
 # 10) 恢复为环境变量里的默认配置
-curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"reset":true}'`;
+curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"reset":true}'
+
+# 11) 加速源（镜像）：查看当前选用哪个源、各源延迟
+curl ${baseUrl}/api/mirrors
+
+# 12) 立即重新测速（自动模式每次拉取前也会测）
+curl -X POST ${baseUrl}/api/mirrors/probe -H 'Content-Type: application/json' -d '{"kind":"both"}'
+
+# 13) 运行时改加速源：改成只用最快的那个，或全关掉走直连
+curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' \
+  -d '{"mirrorMode":"fixed","assetMirrors":["https://gh-proxy.com/","direct"]}'
+`;
       }
 
       let settingsDirty = false;
@@ -323,6 +353,9 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"r
         $('set-interval').value = s.syncIntervalSeconds ?? '';
         $('set-assetregex').value = s.assetRegex || '';
         $('set-prerelease').checked = Boolean(s.includePrerelease);
+        $('set-mirrormode').value = s.mirrorMode || 'auto';
+        $('set-assetmirrors').value = (s.assetMirrors || []).map((m) => m || 'direct').join(',');
+        $('set-apimirrors').value = (s.apiMirrors || []).map((m) => m || 'direct').join(',');
         settingsDirty = false;
       }
 
@@ -361,16 +394,18 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"r
 
       async function refresh() {
         try {
-          const [status, releases, files, settings] = await Promise.all([
+          const [status, releases, files, settings, mirrors] = await Promise.all([
             getJson('/api/status'),
             getJson('/api/releases'),
             getJson('/api/files'),
             getJson('/api/settings').catch(() => null),
+            getJson('/api/mirrors').catch(() => null),
           ]);
           renderSummary(status);
           renderReleases(releases);
           renderFiles(files);
           if (settings && !settings.error) renderSettings(settings);
+          renderMirrors(mirrors);
           renderUsage(releases.baseUrl || location.origin);
         } catch (err) {
           $('sync-msg').textContent = '加载失败: ' + err.message;
@@ -400,7 +435,7 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"r
 
       $('reload-btn').addEventListener('click', refresh);
 
-      ['set-repo', 'set-apibase', 'set-keep', 'set-interval', 'set-assetregex', 'set-prerelease'].forEach((id) => {
+      ['set-repo', 'set-apibase', 'set-keep', 'set-interval', 'set-assetregex', 'set-prerelease', 'set-mirrormode', 'set-assetmirrors', 'set-apimirrors'].forEach((id) => {
         $(id).addEventListener('input', () => {
           settingsDirty = true;
           $('settings-msg').textContent = '有未保存的修改';
@@ -413,6 +448,9 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"r
           apiBase: $('set-apibase').value.trim() || undefined,
           includePrerelease: $('set-prerelease').checked,
           assetRegex: $('set-assetregex').value.trim(),
+          mirrorMode: $('set-mirrormode').value,
+          assetMirrors: $('set-assetmirrors').value.trim() || 'direct',
+          apiMirrors: $('set-apimirrors').value.trim() || 'direct',
         };
         const keep = $('set-keep').value.trim();
         const interval = $('set-interval').value.trim();
@@ -423,6 +461,48 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' -d '{"r
       });
 
       $('settings-reset').addEventListener('click', () => postSettings({ reset: true }));
+
+      function renderMirrors(m) {
+        if (!m) return;
+        const line = (kind) => {
+          const d = m[kind];
+          if (!d) return '';
+          const ok = (d.results || []).filter((r) => r.ok);
+          const best = d.chosen ? `当前使用: ${d.chosen}` : '当前使用: 未知';
+          return `${kind === 'asset' ? '资产下载' : 'Release API'}（${d.mode}）${best}` +
+            (d.probedAt ? `，上次探测 ${new Date(d.probedAt).toLocaleTimeString()}，可用 ${ok.length}/${(d.results || []).length} 个源` : '，尚未探测');
+        };
+        $('mirror-status').textContent = [line('asset'), line('api')].filter(Boolean).join(' · ');
+      }
+
+      function renderMirrorResults(data) {
+        const rows = [];
+        for (const kind of ['asset', 'api']) {
+          const d = data[kind];
+          if (!d) continue;
+          rows.push(`【${kind === 'asset' ? '资产下载' : 'Release API'}】模式 ${d.mode}`);
+          for (const r of d.results || []) {
+            rows.push(`  ${r.ok ? '✔' : '✘'} ${r.mirror.padEnd(26)} ${String(r.latencyMs).padStart(5)}ms ${r.ok ? (r.supportsRange ? '支持续传' : '不支持续传') : '失败: ' + (r.error || '')}`);
+          }
+          rows.push(`  → 选用: ${d.chosen || '无（将直连）'}`);
+        }
+        $('mirror-results').textContent = rows.join('\n');
+      }
+
+      $('mirror-probe').addEventListener('click', async () => {
+        const msg = $('settings-msg');
+        msg.textContent = '正在探测加速源…';
+        try {
+          const res = await fetch('/api/mirrors/probe', { method: 'POST', headers: tokenHeaders() });
+          const data = await res.json().catch(() => null);
+          if (!res.ok) throw new Error((data && data.message) || `HTTP ${res.status}`);
+          renderMirrorResults(data);
+          msg.textContent = '探测完成';
+          refresh();
+        } catch (err) {
+          msg.textContent = '探测失败: ' + err.message;
+        }
+      });
 
       refresh();
       setInterval(refresh, 5000);

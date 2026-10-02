@@ -1,7 +1,16 @@
 import path from 'node:path';
+import { KNOWN_API_MIRRORS, KNOWN_ASSET_MIRRORS, parseMirrors } from './mirror-list.js';
 import { parseBool, parseNumber, parseRegex } from './util.js';
 
 const env = process.env;
+
+function normalizeMirrorMode(value) {
+  const mode = String(value ?? 'auto').trim().toLowerCase();
+  if (!['auto', 'fixed', 'off'].includes(mode)) {
+    throw new Error(`MIRROR_MODE 只能是 auto / fixed / off，当前值: ${value}`);
+  }
+  return mode;
+}
 
 function normalizeRepo(value, fallback) {
   const raw = String(value ?? '').trim() || fallback;
@@ -35,6 +44,22 @@ export const config = {
   assetRegex: parseRegex(env.ASSET_REGEX, 'ASSET_REGEX'),
   /** 排除名字匹配该正则的资产 */
   assetExcludeRegex: parseRegex(env.ASSET_EXCLUDE_REGEX, 'ASSET_EXCLUDE_REGEX'),
+
+  /**
+   * 加速源（镜像）：拉 Release 列表和下载资产时走这些源。
+   *   auto  = 拉取前现场探测，自动用延迟最低的可用源（默认）
+   *   fixed = 按配置顺序使用，不探测
+   *   off   = 只用直连 GitHub
+   */
+  mirrorMode: normalizeMirrorMode(env.MIRROR_MODE),
+  /** 资产下载加速源列表（逗号分隔；direct 表示直连） */
+  assetMirrors: parseMirrors(env.ASSET_MIRRORS ?? KNOWN_ASSET_MIRRORS.join(','), KNOWN_ASSET_MIRRORS),
+  /** GitHub API 加速源列表 */
+  apiMirrors: parseMirrors(env.API_MIRRORS ?? KNOWN_API_MIRRORS.join(','), KNOWN_API_MIRRORS),
+  /** 探测单个加速源的超时（毫秒） */
+  mirrorProbeTimeoutMs: parseNumber(env.MIRROR_PROBE_TIMEOUT_SECONDS, 8, { min: 1, max: 120 }) * 1000,
+  /** 探测结果缓存时长（毫秒），期间不再重复探测 */
+  mirrorProbeCacheMs: parseNumber(env.MIRROR_PROBE_CACHE_SECONDS, 1800, { min: 10, max: 86400 }) * 1000,
 
   /** 数据目录（挂载卷） */
   dataDir: path.resolve(env.DATA_DIR || '/data'),
@@ -78,6 +103,9 @@ export function publicConfig() {
     keepVersions: config.keepVersions,
     assetFilter: config.assetRegex ? config.assetRegex.source : null,
     assetExclude: config.assetExcludeRegex ? config.assetExcludeRegex.source : null,
+    mirrorMode: config.mirrorMode,
+    assetMirrors: config.assetMirrors,
+    apiMirrors: config.apiMirrors,
     dataDir: config.dataDir,
     syncIntervalSeconds: config.syncIntervalSeconds,
     syncOnStart: config.syncOnStart,
