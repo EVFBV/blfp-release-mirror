@@ -329,7 +329,8 @@ async function handleApi(req, res, url) {
 
       // 让新的间隔/仓库立刻生效：重排定时器并马上同步一次
       sync.reschedule();
-      const promise = sync.syncNow(repoChanged ? 'settings-change' : 'settings-change-async');
+      // 如果此刻正好有同步在跑（用的是旧配置），排队结束后按新配置再同步一次
+      const promise = sync.syncNow('settings-change', { rerunIfBusy: true });
       promise.catch(() => {});
 
       return sendJson(req, res, 200, {

@@ -24,6 +24,7 @@ const state = {
 };
 
 let inFlight = null;
+let rerunRequested = false;
 let timer = null;
 let stopped = false;
 
@@ -213,14 +214,29 @@ async function runSync(reason) {
   }
 }
 
-/** 触发一次同步；已有同步在跑时直接复用，避免并发。 */
-export function syncNow(reason = 'manual') {
+/**
+ * 触发一次同步；已有同步在跑时直接复用，避免并发。
+ *
+ * rerunIfBusy=true 用于"配置刚改过"这类场景：当前这次同步用的是旧配置，
+ * 因此等它结束后会自动再补一次同步，保证新配置立刻生效而不是等到下个周期。
+ */
+export function syncNow(reason = 'manual', { rerunIfBusy = false } = {}) {
   if (inFlight) {
-    log.info(`同步已在进行中，复用当前任务（请求原因: ${reason}）`);
+    if (rerunIfBusy) {
+      rerunRequested = true;
+      log.info(`同步已在进行中，已排队在结束后按新配置再同步一次（请求原因: ${reason}）`);
+    } else {
+      log.info(`同步已在进行中，复用当前任务（请求原因: ${reason}）`);
+    }
     return inFlight;
   }
   inFlight = runSync(reason).finally(() => {
     inFlight = null;
+    if (rerunRequested) {
+      rerunRequested = false;
+      // 排队的那次同步用最新配置重跑
+      syncNow('queued-rerun').catch(() => {});
+    }
   });
   return inFlight;
 }

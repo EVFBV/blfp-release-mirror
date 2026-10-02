@@ -50,6 +50,15 @@ const postSettings = async (payload) => {
   });
   return { status: res.status, body: await res.json().catch(() => null) };
 };
+/** 等到条件成立（用于等待"配置变更后排队的补跑同步"） */
+async function waitFor(predicate, { timeoutMs = 10000, intervalMs = 50, label = '条件' } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await predicate()) return true;
+    if (Date.now() > deadline) throw new Error(`等待超时: ${label}`);
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
 
 test.after(async () => {
   sync.stopScheduler();
@@ -158,6 +167,9 @@ test('运行时配置：镜像哪个 GitHub 仓库可以随时改', async (t) =>
   });
 
   await t.test('reset 恢复环境变量默认（仓库回到 A），并再次同步回 A', async () => {
+    // 先把可能还在后台跑的同步等干净，避免断言到上一次配置的结果
+    await sync.syncNow('drain-before-reset');
+
     const { status, body } = await postSettings({ reset: true });
     assert.equal(status, 200);
     assert.equal(body.settings.repo, 'owner-aaa/app-a');
@@ -168,6 +180,21 @@ test('运行时配置：镜像哪个 GitHub 仓库可以随时改', async (t) =>
     const result = await sync.syncNow('settings-test-reset');
     assert.equal(result.newestTag, 'v1.0.0');
     assert.deepEqual(await localNames(), [repoAAsset.name], '应清理仓库 B 的文件并下载回仓库 A');
+  });
+
+  await t.test('同步进行中改配置：结束后会自动按新配置补跑一次', async () => {
+    const runsBefore = sync.getSyncState().runs;
+
+    // 先占住同步（不 await），模拟"同步很慢的时候用户改了配置"
+    const busy = sync.syncNow('busy-test');
+    const queued = sync.syncNow('busy-test-queued', { rerunIfBusy: true });
+    assert.equal(busy, queued, '进行中时应复用同一个任务');
+
+    await busy;
+    // 排队的那次补跑应该在之后自动发生
+    await waitFor(() => sync.getSyncState().runs >= runsBefore + 2, { label: '排队补跑同步' });
+    assert.ok(sync.getSyncState().runs >= runsBefore + 2, '应该发生了额外一次同步');
+    assert.equal(sync.getSyncState().lastResult.newestTag, 'v1.0.0', '补跑使用最新配置');
   });
 
   await t.test('GET /api/config 同时给出生效配置与运行时配置来源', async () => {
