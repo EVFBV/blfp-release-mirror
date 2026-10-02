@@ -165,6 +165,24 @@ jobs:
           再按实测延迟排序**，自动用最快的源拉取并启动容器；某个源拉取失败会自动降级到下一个。
           只想看各源延迟：\`bash install.sh --list\`；想先预览命令：\`bash install.sh --dry-run\`。
 
+          ## 程序内置加速源：拉 Release 自动走最快的源
+
+          ```bash
+          # auto（默认）：拉取前探测各加速源，自动用延迟最低且真能取到数据的那一个；
+          # 某个源下到一半断了会自动换源并从已下载部分续传；全部不可用时回落直连 GitHub
+          docker run -d --name blfp-release-mirror --restart unless-stopped \
+            -p 8080:8080 \
+            -e GITHUB_REPO=EVFBV/blfp-client \
+            -e MIRROR_MODE=auto \
+            -e ASSET_MIRRORS=https://gh-proxy.com/,https://ghfast.top/,https://gh.llkk.cc/,https://ghproxy.net/ \
+            -e API_MIRRORS=https://gh-proxy.com/ \
+            -v blfp-data:/data \
+            ${IMAGE}:${VER}
+
+          # 看当前用哪个源 / 各源延迟：curl http://localhost:8080/api/mirrors
+          # 立即重新测速：curl -X POST http://localhost:8080/api/mirrors/probe -d '{"kind":"both"}'
+          ```
+
           ## 或手动拉镜像（下面用官方地址，也可换成任意加速源前缀）
 
           \`\`\`bash
