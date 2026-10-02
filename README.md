@@ -33,22 +33,47 @@
 
 ---
 
-## 快速开始
+## 安装
 
-### 方式一：docker compose（推荐）
+### 方式一：直接拉现成镜像（免构建，推荐）
+
+镜像已发布在 GitHub Container Registry，多架构（`linux/amd64` + `linux/arm64`，群晖/NAS/树莓派都能用）：
 
 ```bash
-# 在项目目录下
+docker run -d --name blfp-release-mirror --restart unless-stopped \
+  -p 8080:8080 \
+  -e GITHUB_REPO=EVFBV/blfp-client \
+  -e INCLUDE_PRERELEASE=true \
+  -e KEEP_VERSIONS=1 \
+  -e SYNC_INTERVAL_SECONDS=600 \
+  -v blfp-data:/data \
+  ghcr.io/evfbv/blfp-release-mirror:latest
+```
+
+或者用 compose（配置文件是自包含的，不需要克隆仓库）：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/EVFBV/blfp-release-mirror/main/docker-compose.ghcr.yml
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+打开 <http://localhost:8080> 就能看到网页控制台。可用标签：`latest`、`1.0.0`、`1.0`（想锁定版本就用 `:1.0.0`）。
+
+> 镜像地址是 `ghcr.io/evfbv/blfp-release-mirror`。若 `docker pull` 提示无权限，说明该包被设成了私有，
+> 可在 GitHub 仓库页 → Packages → 该包 → Settings 里改为 Public（或先 `docker login ghcr.io`）。
+
+### 方式二：从源码构建（docker compose）
+
+```bash
+git clone https://github.com/EVFBV/blfp-release-mirror.git
+cd blfp-release-mirror
 docker compose up -d --build
 
 # 查看日志（能看到下载进度、清理旧版本的记录）
 docker logs -f blfp-release-mirror
-
-# 打开浏览器
-# http://localhost:8080
 ```
 
-### 方式二：docker run
+### 方式三：从源码构建（docker run）
 
 ```bash
 docker build -t blfp-release-mirror:latest .
@@ -65,13 +90,20 @@ docker run -d \
   blfp-release-mirror:latest
 ```
 
-### 方式三：不用 Docker，直接本机跑
+### 方式四：不用 Docker，直接本机跑
+
+下载 Release 里的源码包（或用 git clone）后：
 
 ```bash
 DATA_DIR=./data PORT=8080 node src/server.js
 ```
 
 > 需要的只是 Node.js 20.10+，没有 npm 依赖，不用 `npm install`。
+
+### 发布产物在哪
+
+- **Release 页**：<https://github.com/EVFBV/blfp-release-mirror/releases> —— 每个版本都附带 `blfp-release-mirror-vX.Y.Z.tar.gz` 源码包和安装说明
+- **镜像**：<https://github.com/EVFBV/blfp-release-mirror/pkgs/container/blfp-release-mirror>
 
 ---
 
@@ -307,8 +339,11 @@ location / {
 │   └── util.js         # 通用工具（并发池、哈希、文件名净化等）
 ├── public/index.html   # 网页控制台（直接访问用的页面）
 ├── test/               # 自动化测试（含假 GitHub 服务的端到端测试）
+├── .github/workflows/  # CI：跑测试 + 构建镜像；打 tag 时发布镜像到 GHCR 并创建 Release
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml         # 从源码构建安装
+├── docker-compose.ghcr.yml    # 免构建：直接用已发布镜像
+├── LICENSE
 ├── env.example
 └── package.json
 ```

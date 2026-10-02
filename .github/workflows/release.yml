@@ -1,0 +1,177 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # GHCR 的镜像名必须全小写，所以这里不能直接用 github.repository（owner 是 EVFBV）
+  IMAGE: ghcr.io/evfbv/blfp-release-mirror
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 语法检查
+        run: for f in src/*.js; do node --check "$f"; done
+      - name: 运行测试
+        run: node --test test/*.test.js
+
+  # 构建并推送多架构镜像到 GHCR（amd64 + arm64，群晖/树莓派/NAS 都能用）
+  publish-image:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 计算镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.licenses=MIT
+
+      - name: 构建并推送
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 镜像摘要
+        run: |
+          echo "镜像: ${IMAGE}"
+          echo "标签:"; echo "${{ steps.meta.outputs.tags }}"
+          echo "摘要: ${{ steps.build.outputs.digest }}"
+
+  # 冒烟测试：把刚推送的镜像真的拉下来跑一遍，验证 /health、首页与接口
+  smoke-test:
+    needs: publish-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取镜像并启动
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            IMAGE_TAG="${IMAGE}:${GITHUB_REF_NAME#v}"
+          else
+            IMAGE_TAG="${IMAGE}:latest"
+          fi
+          echo "测试镜像: ${IMAGE_TAG}"
+          docker pull "${IMAGE_TAG}"
+          docker run -d --name mirror -p 8080:8080 \
+            -e SYNC_ON_START=false -e SYNC_INTERVAL_SECONDS=0 \
+            "${IMAGE_TAG}"
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/health > /dev/null 2>&1 && break
+            sleep 1
+          done
+          echo "--- /health"; curl -fsS http://127.0.0.1:8080/health
+          echo "--- /api/settings"; curl -fsS http://127.0.0.1:8080/api/settings | head -12
+          echo "--- 首页:"; curl -fsS -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:8080/
+          echo "--- 容器日志:"; docker logs mirror
+          docker rm -f mirror
+
+  # 创建 Release，并附上可直接解压运行的源码包
+  release:
+    needs: [publish-image, smoke-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 打包源码
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NAME="blfp-release-mirror-${TAG}"
+          git archive --format=tar.gz --prefix="${NAME}/" -o "${NAME}.tar.gz" HEAD
+          ls -lh "${NAME}.tar.gz"
+
+      - name: 生成 Release 说明
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#v}"
+          cat > NOTES.md <<EOF
+          Docker 镜像：\`${IMAGE}:${VER}\`（多架构：linux/amd64 + linux/arm64，另有 \`latest\`）
+
+          ## 一键安装
+
+          \`\`\`bash
+          # 1) 拉镜像并运行（数据存在命名卷 blfp-data 里）
+          docker run -d --name blfp-release-mirror --restart unless-stopped \\
+            -p 8080:8080 \\
+            -e GITHUB_REPO=EVFBV/blfp-client \\
+            -e INCLUDE_PRERELEASE=true \\
+            -e KEEP_VERSIONS=1 \\
+            -e SYNC_INTERVAL_SECONDS=600 \\
+            -v blfp-data:/data \\
+            ${IMAGE}:${VER}
+
+          # 2) 打开网页控制台（含"镜像配置"表单，可不重启直接换仓库）
+          #    http://localhost:8080
+
+          # 3) 常用接口
+          curl http://localhost:8080/api/latest       # 最新版本信息
+          curl -L -O -J http://localhost:8080/latest  # 直接下载最新版
+          curl -X POST http://localhost:8080/api/sync  # 立即同步
+          \`\`\`
+
+          ## 或免克隆用 compose
+
+          \`\`\`bash
+          curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/docker-compose.ghcr.yml
+          docker compose -f docker-compose.ghcr.yml up -d
+          \`\`\`
+
+          ## 附件
+
+          - \`blfp-release-mirror-${TAG}.tar.gz\`：完整源码包（解压后 \`node src/server.js\` 即可运行，无需 npm install）
+
+          环境变量表、API 文档、常见问题见仓库 README。
+          EOF
+          cat NOTES.md
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" \
+            "blfp-release-mirror-${TAG}.tar.gz" \
+            --title "blfp-release-mirror ${TAG}" \
+            --notes-file NOTES.md \
+            --verify-tag
