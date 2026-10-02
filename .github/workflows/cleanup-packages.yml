@@ -1,22 +1,31 @@
 name: cleanup-packages
 
-# 清理 GHCR 上的冗余包版本与别名标签。
-# 默认「保留最近 5 个版本，并删掉 1.0 / v1.0.0 这类多余的别名标签」。
+# 清理 GHCR 上的冗余镜像版本。
+#
+# 背景：GHCR 不支持单独删除某个标签（实测 DELETE .../manifests/<tag> 返回 HTTP 405），
+#       所以只能按「包版本」删除。本工作流会保留带有 KEEP_TAG（默认 1.0.0）的那个版本，
+#       删除其它版本（例如只剩 1.0 / v1.0.0 这类遗留别名的旧版本），
+#       从而让包页面只剩一个版本、两个标签。
+#
+# 用法：Actions → cleanup-packages → Run workflow
+#   keep_tag         要保留的标签（默认 1.0.0，即最新发布）
+#   include_untagged 是否连无标签版本（构建证明等）一起删，默认 false
+#   dry_run          默认 true，只打印不删除；确认无误再改成 false
 on:
   workflow_dispatch:
     inputs:
-      min_versions_to_keep:
-        description: 保留最近几个镜像版本（旧的会被删除）
+      keep_tag:
+        description: 要保留的版本标签（该版本会被保留，其余删除）
         required: false
-        default: '5'
-      delete_tags:
-        description: 要额外删除的别名标签，逗号分隔（留空则跳过）
-        required: false
-        default: '1.0,v1.0.0'
-      dry_run:
-        description: 只打印、不真的删除（true/false）
+        default: '1.0.0'
+      include_untagged:
+        description: 是否同时删除无标签版本（true/false）
         required: false
         default: 'false'
+      dry_run:
+        description: 只打印不删除（true/false）
+        required: false
+        default: 'true'
 
 permissions:
   contents: read
@@ -24,77 +33,60 @@ permissions:
 
 env:
   PACKAGE: blfp-release-mirror
-  IMAGE: ghcr.io/evfbv/blfp-release-mirror
 
 jobs:
-  # 1) 删除过期的镜像版本（每个版本 = 一个 digest，多架构镜像只占一个版本）
   prune-versions:
     runs-on: ubuntu-latest
     steps:
-      - name: 保留最近 ${{ inputs.min_versions_to_keep }} 个版本，删除更旧的
-        if: ${{ inputs.dry_run != 'true' }}
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: ${{ env.PACKAGE }}
-          package-type: container
-          min-versions-to-keep: ${{ inputs.min_versions_to_keep }}
-          delete-only-untagged-versions: 'false'
-
-      - name: 当前包版本一览
+      - name: 保留指定版本、清理其余版本
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "包: ${PACKAGE}"
-          gh api "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE}/versions" \
-            --jq '.[] | "  \(.id)  \(.created_at)  tags=\(.metadata.container.tags | join(","))"' || \
-            echo "（无权限读取包信息，跳过列表；不影响删除操作）"
-
-  # 2) 删除 1.0 / v1.0.0 这类和 1.0.0 指向同一 digest 的冗余标签
-  delete-alias-tags:
-    runs-on: ubuntu-latest
-    if: ${{ inputs.delete_tags != '' }}
-    steps:
-      - name: 通过 GHCR 注册表 API 删除别名标签
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ACTOR: ${{ github.actor }}
-          TAGS: ${{ inputs.delete_tags }}
+          KEEP_TAG: ${{ inputs.keep_tag }}
+          INCLUDE_UNTAGGED: ${{ inputs.include_untagged }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          set -u
-          REPO="evfbv/${PACKAGE}"
+          set -euo pipefail
+          API="/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE}/versions"
 
-          # 用 Actions 的 GITHUB_TOKEN 换取带 push 权限的注册表 token
-          TOKEN=$(curl -fsS -u "${ACTOR}:${GH_TOKEN}" \
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO}:push,pull" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))')
-          if [ -z "${TOKEN}" ]; then
-            echo "❌ 拿不到带 push 权限的 token，无法删除标签"
+          echo "=== 当前所有版本（id / 创建时间 / 标签）"
+          gh api --paginate "$API" > versions.json
+          jq -r '.[] | "  \(.id)  \(.created_at)  tags=[\(.metadata.container.tags // [] | join(","))]"' versions.json
+
+          KEEP_ID="$(jq -r --arg t "$KEEP_TAG" \
+            '[.[] | select((.metadata.container.tags // []) | index($t))] | sort_by(.created_at) | last | .id // empty' versions.json)"
+          if [ -z "$KEEP_ID" ]; then
+            echo "❌ 找不到带标签 ${KEEP_TAG} 的版本，为避免误删，什么都不做"
             exit 1
           fi
-          echo "✅ 已获取注册表 token"
+          echo "=== 要保留的版本：id=${KEEP_ID}（含标签 ${KEEP_TAG}）"
 
-          echo "--- 删除前的标签:"
-          curl -fsS -H "Authorization: Bearer ${TOKEN}" "https://ghcr.io/v2/${REPO}/tags/list" \
-            | python3 -c 'import json,sys; print("   ", ", ".join(json.load(sys.stdin).get("tags") or []))'
+          TARGETS="$(jq -r --arg keep "$KEEP_ID" --argjson untagged "$([ "$INCLUDE_UNTAGGED" = "true" ] && echo true || echo false)" \
+            '.[] | select((.id | tostring) != $keep)
+                 | select(((.metadata.container.tags // []) | length) > 0 or $untagged)
+                 | "\(.id) \(.metadata.container.tags // [] | join(","))"' versions.json)"
 
-          for tag in $(echo "${TAGS}" | tr ',' ' '); do
-            [ -z "${tag}" ] && continue
-            if [ "${DRY_RUN}" = "true" ]; then
-              echo "[dry-run] 将删除标签: ${tag}"
-              continue
+          if [ -z "$TARGETS" ]; then
+            echo "=== 没有需要清理的版本"
+            exit 0
+          fi
+
+          echo "=== 计划删除："
+          printf '  %s\n' "$TARGETS"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "=== dry_run=true，未执行删除（确认后改成 false 再跑一次）"
+            exit 0
+          fi
+
+          while read -r id tags; do
+            [ -z "$id" ] && continue
+            if gh api -X DELETE "$API/$id"; then
+              echo "  ✔ 已删除版本 id=${id}（tags=${tags:-无}）"
+            else
+              echo "  ✘ 删除失败 id=${id}"
             fi
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
-              "https://ghcr.io/v2/${REPO}/manifests/${tag}")
-            case "${CODE}" in
-              202|200) echo "✅ 已删除标签 ${tag} (HTTP ${CODE})" ;;
-              404) echo "⏭  标签 ${tag} 不存在，跳过" ;;
-              *) echo "⚠️  删除标签 ${tag} 失败 (HTTP ${CODE})" ;;
-            esac
-          done
+          done <<< "$TARGETS"
 
-          echo "--- 删除后的标签:"
-          curl -fsS -H "Authorization: Bearer ${TOKEN}" "https://ghcr.io/v2/${REPO}/tags/list" \
-            | python3 -c 'import json,sys; print("   ", ", ".join(json.load(sys.stdin).get("tags") or []))'
+          echo "=== 清理后的版本列表"
+          gh api --paginate "$API" \
+            | jq -r '.[] | "  \(.id)  \(.created_at)  tags=[\(.metadata.container.tags // [] | join(","))]"'
