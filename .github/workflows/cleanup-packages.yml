@@ -22,6 +22,10 @@ on:
         description: 是否同时删除无标签版本（true/false）
         required: false
         default: 'false'
+      align_tags:
+        description: 需要重新指向 keep_tag 的别名标签，逗号分隔（留空跳过）
+        required: false
+        default: '1.0,v1.0.0'
       dry_run:
         description: 只打印不删除（true/false）
         required: false
@@ -35,6 +39,51 @@ env:
   PACKAGE: blfp-release-mirror
 
 jobs:
+  # 让遗留别名标签（1.0 / v1.0.0）指向与 keep_tag 完全相同的镜像，
+  # 避免出现「:1.0 拉到的是旧构建、:1.0.0 才是新的」这种坑。
+  # 用 imagetools 直接改指向，不重新构建，几秒钟完成。
+  align-tags:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.align_tags != '' }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 把别名标签指到目标标签
+        env:
+          IMAGE: ghcr.io/evfbv/blfp-release-mirror
+          ALIGN_TO: ${{ inputs.keep_tag }}
+          ALIGN_TAGS: ${{ inputs.align_tags }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -uo pipefail
+          echo "目标镜像：${IMAGE}:${ALIGN_TO}"
+          for tag in $(echo "${ALIGN_TAGS}" | tr ',' ' '); do
+            [ -z "${tag}" ] && continue
+            [ "${tag}" = "${ALIGN_TO}" ] && continue
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "[dry-run] 将把 ${IMAGE}:${tag} 指向 ${IMAGE}:${ALIGN_TO}"
+              continue
+            fi
+            if docker buildx imagetools create --tag "${IMAGE}:${tag}" "${IMAGE}:${ALIGN_TO}"; then
+              echo "  ✔ ${tag} 已指向 ${ALIGN_TO}"
+            else
+              echo "  ✘ ${tag} 重指向失败"
+            fi
+          done
+
+          echo "=== 校验各标签当前的 digest"
+          for tag in ${ALIGN_TO} latest $(echo "${ALIGN_TAGS}" | tr ',' ' '); do
+            [ -z "${tag}" ] && continue
+            printf '  %-8s %s\n' "${tag}" "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${IMAGE}:${tag}" 2>/dev/null || echo 取不到)"
+          done
+
   prune-versions:
     runs-on: ubuntu-latest
     steps:
