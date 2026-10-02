@@ -1,5 +1,8 @@
 # blfp-release-mirror
 
+[![tests](https://github.com/EVFBV/blfp-release-mirror/actions/workflows/test.yml/badge.svg)](https://github.com/EVFBV/blfp-release-mirror/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 自动把 GitHub 仓库 [EVFBV/blfp-client](https://github.com/EVFBV/blfp-client) 的 **最新 Release（包含 pre-release 预发布版）**
 拉到本地磁盘、**自动删除旧版本**，并对外提供**浏览器直接下载**和**HTTP API 下载**的 Docker 服务。
 
@@ -317,6 +320,9 @@ location / {
 ```bash
 node --test test/*.test.js
 ```
+
+CI（`.github/workflows/test.yml`）会在 Node 20 / Node 22 上跑全部测试，并额外构建 Docker 镜像、
+启动容器验证 `/health` 与 `/api/settings`。
 
 覆盖内容：
 
