@@ -229,7 +229,7 @@ async function serveIndex(req, res) {
     return sendJson(req, res, 200, {
       service: APP_NAME,
       version: APP_VERSION,
-      endpoints: ['/api/status', '/api/releases', '/api/latest', '/api/files', '/latest', '/download/<file>'],
+      endpoints: ['/api/status', '/api/releases', '/api/latest', '/api/files', '/latest', '/stable', '/download/<file>'],
     });
   }
 }
@@ -302,6 +302,7 @@ async function handleApi(req, res, url) {
         mirrorProbe: 'POST /api/mirrors/probe',
         directFile: '/download/<fileName>',
         alwaysLatest: '/latest',
+        alwaysStable: '/stable',
       },
     });
   }
@@ -540,18 +541,37 @@ async function route(req, res) {
     return serveFileRequest(req, res, m[1], { download: attachment });
   }
 
-  // 始终指向最新版本：/latest 或 /latest/<name>
-  if (pathname === '/latest' || pathname === '/latest/') {
-    if (!authorize(req, res, { download: true })) return undefined;
+  // 始终指向最新版本：/latest、/latest/<name>；/stable 同理，但只认正式版（跳过 pre）
+  const newestMatch = /^\/(latest|stable)(?:\/(.+?))?\/?$/.exec(pathname);
+  if (newestMatch) {
+    const onlyStable = newestMatch[1] === 'stable';
+    const wanted = newestMatch[2] ? path.basename(newestMatch[2]) : null;
+    const label = onlyStable ? '正式版' : '最新版本';
+    if (!wanted && !authorize(req, res, { download: true })) return undefined;
+
     const manifest = await store.readManifest();
-    const latest = (manifest.releases || [])[0];
+    const releases = manifest.releases || [];
+    const latest = onlyStable ? releases.find((r) => !r.prerelease) : releases[0];
     const assets = (latest?.assets || []).filter((a) => a.downloaded && a.fileName);
+
     if (!latest || assets.length === 0) {
       return sendJson(req, res, 404, {
         error: 'not_found',
-        message: '本地还没有可用的最新版本文件，请先调用 POST /api/sync',
+        message: onlyStable
+          ? `本地还没有正式版文件（当前保留: ${releases.map((r) => r.tag).join(', ') || '无'}；可设置 KEEP_STABLE=true 让最新正式版始终保留）`
+          : '本地还没有可用的最新版本文件，请先调用 POST /api/sync',
       });
     }
+
+    if (wanted) {
+      const asset = assets.find((a) => a.fileName === wanted || a.name === wanted)
+        || (latest.assets || []).find((a) => a.fileName === wanted || a.name === wanted);
+      if (!asset || !asset.fileName) {
+        return sendJson(req, res, 404, { error: 'not_found', message: `${label} ${latest.tag} 中没有文件 ${wanted}` });
+      }
+      return serveFileRequest(req, res, asset.fileName, { download: false });
+    }
+
     if (assets.length === 1) {
       res.writeHead(302, { location: `/download/${encodeURIComponent(assets[0].fileName)}` });
       return res.end();
@@ -559,21 +579,10 @@ async function route(req, res) {
     const base = baseUrlFor(req);
     return sendJson(req, res, 200, {
       tag: latest.tag,
-      message: '该版本包含多个文件，请从列表中选择',
+      prerelease: Boolean(latest.prerelease),
+      message: `该${label}包含多个文件，请从列表中选择`,
       files: assets.map((a) => `${base}/download/${encodeURIComponent(a.fileName)}`),
     });
-  }
-
-  m = /^\/latest\/(.+)$/.exec(pathname);
-  if (m) {
-    const manifest = await store.readManifest();
-    const latest = (manifest.releases || [])[0];
-    const wanted = path.basename(m[1]);
-    const asset = (latest?.assets || []).find((a) => a.fileName === wanted || a.name === wanted);
-    if (!asset || !asset.fileName) {
-      return sendJson(req, res, 404, { error: 'not_found', message: `最新版本 ${latest?.tag || '未知'} 中没有文件 ${wanted}` });
-    }
-    return serveFileRequest(req, res, asset.fileName, { download: false });
   }
 
   // 指定版本的直接访问：/releases/<tag>/<name>

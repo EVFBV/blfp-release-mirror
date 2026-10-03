@@ -40,6 +40,12 @@ export const config = {
   includeDraft: parseBool(env.INCLUDE_DRAFT, false),
   /** 本地保留几个最新版本，超出的自动删除 */
   keepVersions: parseNumber(env.KEEP_VERSIONS, 1, { min: 1, max: 100 }),
+  /**
+   * 最新正式版是否始终额外保留（默认 true）。
+   * 按语义化版本比较，`v2.3.22-pre` 比正式版 `v2.3.19` 更新，
+   * 只靠 KEEP_VERSIONS 会把最新正式版当成旧版本清理掉。
+   */
+  keepStable: parseBool(env.KEEP_STABLE, true),
   /** 只下载名字匹配该正则的资产（留空=全部） */
   assetRegex: parseRegex(env.ASSET_REGEX, 'ASSET_REGEX'),
   /** 排除名字匹配该正则的资产 */
@@ -101,6 +107,7 @@ export function publicConfig() {
     includePrerelease: config.includePrerelease,
     includeDraft: config.includeDraft,
     keepVersions: config.keepVersions,
+    keepStable: config.keepStable,
     assetFilter: config.assetRegex ? config.assetRegex.source : null,
     assetExclude: config.assetExcludeRegex ? config.assetExcludeRegex.source : null,
     mirrorMode: config.mirrorMode,

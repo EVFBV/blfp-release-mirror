@@ -27,6 +27,8 @@ const FIELDS = {
   includePrerelease: { kind: 'bool' },
   includeDraft: { kind: 'bool' },
   keepVersions: { kind: 'int', min: 1, max: 100 },
+  /** 最新正式版是否始终额外保留（避免被版本号更高的 pre 挤掉后清理） */
+  keepStable: { kind: 'bool' },
   assetRegex: { kind: 'regex', nullable: true },
   assetExcludeRegex: { kind: 'regex', nullable: true },
   syncIntervalSeconds: { kind: 'int', min: 0, max: 86400 },
@@ -52,6 +54,7 @@ const envDefaults = Object.freeze({
   includePrerelease: config.includePrerelease,
   includeDraft: config.includeDraft,
   keepVersions: config.keepVersions,
+  keepStable: config.keepStable,
   assetRegex: null,
   assetExcludeRegex: null,
   syncIntervalSeconds: config.syncIntervalSeconds,
@@ -153,6 +156,7 @@ function applyToConfig(settings) {
   config.includePrerelease = settings.includePrerelease;
   config.includeDraft = settings.includeDraft;
   config.keepVersions = settings.keepVersions;
+  config.keepStable = settings.keepStable;
   config.assetRegex = buildRegex(settings.assetRegex, 'assetRegex');
   config.assetExcludeRegex = buildRegex(settings.assetExcludeRegex, 'assetExcludeRegex');
   config.syncIntervalSeconds = settings.syncIntervalSeconds;

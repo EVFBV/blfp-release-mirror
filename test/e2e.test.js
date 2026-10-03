@@ -65,9 +65,11 @@ test('端到端：同步 / 更新 / 清理旧版本 / 下载 API', async (t) => 
     const result = await sync.syncNow('test');
     assert.equal(result.newestTag, 'v2.0.0-pre', '应选中比 v1.9.0 更新的 pre-release');
     assert.equal(result.downloaded, 1);
-    assert.equal(result.pruned, 1, '旧的 v1.9.0 文件应被清理');
+    // KEEP_STABLE 默认开启：最新正式版 v1.9.0 不会被版本号更高的 pre 挤掉
+    assert.equal(result.pruned, 0, '最新正式版不应被当成旧版本清理');
+    assert.equal(result.skipped, 1, 'v1.9.0 已在本地且校验一致，跳过下载');
 
-    assert.deepEqual(await localNames(), [oldAsset.name]);
+    assert.deepEqual(await localNames(), [stableAsset.name, oldAsset.name].sort());
     const onDisk = await fsp.readFile(path.join(FILES_DIR, oldAsset.name));
     assert.ok(onDisk.equals(oldAsset.buffer), '本地文件内容应与远端一致');
 
@@ -88,7 +90,7 @@ test('端到端：同步 / 更新 / 清理旧版本 / 下载 API', async (t) => 
     const result = await sync.syncNow('test-upgrade');
     assert.equal(result.newestTag, 'v2.1.0-pre');
     assert.deepEqual(await localNames(), [newAsset.name], '旧版本文件应被删除，只留最新');
-    assert.equal(result.pruned, 1);
+    assert.equal(result.pruned, 2, '旧 pre 与已不在远端的正式版都应被清理');
 
     const { body } = await getJson('/api/latest');
     assert.equal(body.tag, 'v2.1.0-pre');
@@ -241,6 +243,62 @@ test('端到端：同步 / 更新 / 清理旧版本 / 下载 API', async (t) => 
     const finalLatest = await getJson('/api/latest');
     assert.equal(finalLatest.body.tag, 'v3.0.0-pre');
     assert.equal(finalLatest.body.files[0].sha256, nextAsset.sha256);
+  });
+
+  await t.test('KEEP_STABLE：正式版始终保留，/stable 直达最新正式版，关掉后恢复"只留 N 个版本"', async () => {
+    fake.setReleases([
+      releaseSpec('v4.1.0-pre', { prerelease: true, assets: [oldAsset], publishedAt: '2026-10-10T00:00:00Z' }),
+      releaseSpec('v4.0.0', { assets: [stableAsset], publishedAt: '2026-10-02T00:00:00Z' }),
+    ]);
+
+    const on = await sync.syncNow('keep-stable-on');
+    assert.equal(on.newestTag, 'v4.1.0-pre', '最新版本仍是最新的 pre');
+    assert.deepEqual(
+      await localNames(),
+      [stableAsset.name, oldAsset.name].sort(),
+      'KEEP_VERSIONS=1 时也要额外保留最新正式版 v4.0.0',
+    );
+
+    // /latest 指向最新（pre），/stable 指向最新正式版
+    const latestRes = await fetch(`${base}/latest`, { redirect: 'manual' });
+    assert.equal(latestRes.status, 302);
+    assert.equal(latestRes.headers.get('location'), `/download/${encodeURIComponent(oldAsset.name)}`);
+
+    const stableRes = await fetch(`${base}/stable`, { redirect: 'manual' });
+    assert.equal(stableRes.status, 302);
+    assert.equal(stableRes.headers.get('location'), `/download/${encodeURIComponent(stableAsset.name)}`);
+
+    // 跟随重定向能拿到完整文件
+    const followed = await fetch(`${base}/stable`);
+    assert.equal(followed.status, 200);
+    const bytes = Buffer.from(await followed.arrayBuffer());
+    assert.ok(bytes.equals(stableAsset.buffer), '/stable 应下载到完整且一致的正式版文件');
+
+    // 单个文件的 /stable/<name> 也应可用
+    const named = await fetch(`${base}/stable/${encodeURIComponent(stableAsset.name)}`, { redirect: 'manual' });
+    assert.equal(named.status, 200);
+
+    // 关掉 KEEP_STABLE：回到严格"只保留最新 N 个版本"
+    const saved = await fetch(`${base}/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keepStable: false }),
+    });
+    assert.equal(saved.status, 200);
+    await sync.syncNow('keep-stable-off');
+    assert.deepEqual(await localNames(), [oldAsset.name], '关掉后正式版会被当成旧版本清理');
+
+    const gone = await fetch(`${base}/stable`, { redirect: 'manual' });
+    assert.equal(gone.status, 404, '本地没有正式版时 /stable 应返回 404 而不是报错');
+    const goneBody = await gone.json();
+    assert.match(goneBody.message, /KEEP_STABLE/);
+
+    // 还原，避免影响后面的用例
+    await fetch(`${base}/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keepStable: true }),
+    });
   });
 
   await t.test('INCLUDE_PRERELEASE=false 时不再跟随 pre-release', async () => {

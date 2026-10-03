@@ -144,6 +144,11 @@
             <div style="margin-top:10px"><input id="set-prerelease" type="checkbox" /> 包含预发布版（pre）</div>
           </label>
           <label class="card" style="display:block">
+            <div class="k">始终保留最新正式版</div>
+            <div style="margin-top:10px"><input id="set-keepstable" type="checkbox" /> 即使 pre 的版本号更高也保留正式版</div>
+            <div class="muted" style="margin-top:6px">关掉后严格只保留上面"保留版本数"个版本，最新正式版可能被清理</div>
+          </label>
+          <label class="card" style="display:block">
             <div class="k">加速源模式</div>
             <select id="set-mirrormode" style="width:100%;margin-top:6px">
               <option value="auto">auto：拉取前自动探测，用延迟最低的源</option>
@@ -331,7 +336,10 @@ curl ${baseUrl}/api/mirrors
 # 12) 立即重新测速（自动模式每次拉取前也会测）
 curl -X POST ${baseUrl}/api/mirrors/probe -H 'Content-Type: application/json' -d '{"kind":"both"}'
 
-# 13) 运行时改加速源：改成只用最快的那个，或全关掉走直连
+# 13) 正式版专用固定地址（永远指向最新正式版，不受 pre 影响）
+curl -L -O -J ${baseUrl}/stable
+
+# 14) 运行时改加速源：改成只用最快的那个，或全关掉走直连
 curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' \
   -d '{"mirrorMode":"fixed","assetMirrors":["https://gh-proxy.com/","direct"]}'
 `;
@@ -353,6 +361,7 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' \
         $('set-interval').value = s.syncIntervalSeconds ?? '';
         $('set-assetregex').value = s.assetRegex || '';
         $('set-prerelease').checked = Boolean(s.includePrerelease);
+        $('set-keepstable').checked = s.keepStable !== false;
         $('set-mirrormode').value = s.mirrorMode || 'auto';
         $('set-assetmirrors').value = (s.assetMirrors || []).map((m) => m || 'direct').join(',');
         $('set-apimirrors').value = (s.apiMirrors || []).map((m) => m || 'direct').join(',');
@@ -435,7 +444,7 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' \
 
       $('reload-btn').addEventListener('click', refresh);
 
-      ['set-repo', 'set-apibase', 'set-keep', 'set-interval', 'set-assetregex', 'set-prerelease', 'set-mirrormode', 'set-assetmirrors', 'set-apimirrors'].forEach((id) => {
+      ['set-repo', 'set-apibase', 'set-keep', 'set-interval', 'set-assetregex', 'set-prerelease', 'set-keepstable', 'set-mirrormode', 'set-assetmirrors', 'set-apimirrors'].forEach((id) => {
         $(id).addEventListener('input', () => {
           settingsDirty = true;
           $('settings-msg').textContent = '有未保存的修改';
@@ -447,6 +456,7 @@ curl -X POST ${baseUrl}/api/settings -H 'Content-Type: application/json' \
           repo: $('set-repo').value.trim(),
           apiBase: $('set-apibase').value.trim() || undefined,
           includePrerelease: $('set-prerelease').checked,
+          keepStable: $('set-keepstable').checked,
           assetRegex: $('set-assetregex').value.trim(),
           mirrorMode: $('set-mirrormode').value,
           assetMirrors: $('set-assetmirrors').value.trim() || 'direct',

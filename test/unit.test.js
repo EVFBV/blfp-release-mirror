@@ -94,6 +94,59 @@ test('selectReleases: 默认包含 pre-release，并选出最新的 pre', () => 
   assert.equal(selected[0].assets[0].fileName, 'blfp-setup-v2.1.0-pre.exe');
 });
 
+test('selectReleases: KEEP_STABLE —— 最新正式版不会被版本号更高的 pre 挤掉', async (t) => {
+  // 真实仓库 EVFBV/blfp-client 的形状：最新正式版 v2.3.19 之上还有 3 个版本号更高的 pre
+  const realWorld = [
+    rawRelease('v2.3.22-pre', { prerelease: true, publishedAt: '2026-10-02T00:00:00Z', assets: [{ name: 'setup-v2.3.22-pre.exe' }] }),
+    rawRelease('v2.3.21-pre', { prerelease: true, publishedAt: '2026-10-01T00:00:00Z', assets: [{ name: 'setup-v2.3.21-pre.exe' }] }),
+    rawRelease('v2.3.20-pre', { prerelease: true, publishedAt: '2026-10-01T00:00:00Z', assets: [{ name: 'setup-v2.3.20-pre.exe' }] }),
+    rawRelease('v2.3.19', { publishedAt: '2026-10-01T00:00:00Z', assets: [{ name: 'setup-v2.3.19.exe' }] }),
+    rawRelease('v2.3.19-pre', { prerelease: true, publishedAt: '2026-10-01T00:00:00Z', assets: [{ name: 'setup-v2.3.19-pre.exe' }] }),
+  ];
+
+  await t.test('开启（默认）：KEEP_VERSIONS=1 时也额外保留最新正式版，且名次按版本从新到旧', async () => {
+    await withConfig({ keepStable: true }, () => {
+      const selected = selectReleases(realWorld, 1);
+      assert.deepEqual(selected.map((r) => r.tag), ['v2.3.22-pre', 'v2.3.19']);
+      assert.equal(selected[1].prerelease, false);
+    });
+  });
+
+  await t.test('关闭：严格只保留最新 N 个版本（正式版会被当成旧版本清掉）', async () => {
+    await withConfig({ keepStable: false }, () => {
+      assert.deepEqual(selectReleases(realWorld, 1).map((r) => r.tag), ['v2.3.22-pre']);
+    });
+  });
+
+  await t.test('KEEP_VERSIONS 已经覆盖到正式版时，不会重复保留', async () => {
+    await withConfig({ keepStable: true }, () => {
+      assert.deepEqual(
+        selectReleases(realWorld, 4).map((r) => r.tag),
+        ['v2.3.22-pre', 'v2.3.21-pre', 'v2.3.20-pre', 'v2.3.19'],
+      );
+    });
+  });
+
+  await t.test('最新版本本身就是正式版时，不额外增加条目', async () => {
+    await withConfig({ keepStable: true }, () => {
+      const selected = selectReleases(
+        [
+          rawRelease('v3.0.0', { assets: [{ name: 'a.exe' }] }),
+          rawRelease('v2.0.0', { assets: [{ name: 'b.exe' }] }),
+        ],
+        1,
+      );
+      assert.deepEqual(selected.map((r) => r.tag), ['v3.0.0']);
+    });
+  });
+
+  await t.test('INCLUDE_PRERELEASE=false 时行为不受影响（本来就只要正式版）', async () => {
+    await withConfig({ keepStable: true, includePrerelease: false }, () => {
+      assert.deepEqual(selectReleases(realWorld, 1).map((r) => r.tag), ['v2.3.19']);
+    });
+  });
+});
+
 test('selectReleases: INCLUDE_PRERELEASE=false 时忽略 pre-release', async () => {
   await withConfig({ includePrerelease: false }, () => {
     const selected = selectReleases([

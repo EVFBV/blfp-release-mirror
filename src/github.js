@@ -172,7 +172,22 @@ export function selectReleases(releases, keep = config.keepVersions) {
     .filter((r) => config.includePrerelease || !r.prerelease)
     .filter((r) => r.assets.length > 0);
   const sorted = sortReleases(normalized);
-  const selected = sorted.slice(0, keep);
+  const picked = new Set(sorted.slice(0, keep));
+
+  // 额外保证"最新正式版"留在本地：版本号更高的 pre 会把正式版挤出保留列表，
+  // 不额外保留的话，最新正式版会被当成旧版本删掉。
+  if (config.keepStable) {
+    const newestStable = sorted.find((r) => !r.prerelease);
+    if (newestStable && !picked.has(newestStable)) {
+      picked.add(newestStable);
+      log.info(
+        `额外保留最新正式版 ${newestStable.tag}（它比最新的预发布版版本号低，默认会被 KEEP_VERSIONS=${keep} 清理；不需要请设 KEEP_STABLE=false）`,
+      );
+    }
+  }
+
+  // 按版本从新到旧输出（额外保留的正式版回到它本来的名次）
+  const selected = sorted.filter((r) => picked.has(r));
 
   const nameCount = new Map();
   for (const r of selected) {

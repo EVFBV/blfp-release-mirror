@@ -25,7 +25,8 @@
 | 删除旧版本 | `KEEP_VERSIONS=N` 只保留最新 N 个版本，其余文件自动清理；残留半成品 `.part` 也会清理 |
 | 下载可靠性 | 断点续传（HTTP Range）、sha256 校验（用 GitHub 提供的 digest）、失败重试（指数退避）、卡死自动中断重试 |
 | **拉取自动走加速源** | 拉 Release 列表与下载资产时，先探测各加速源（含国内源），**自动用延迟最低且真能取到数据的那一个**；某源中途失败自动换源并**接着续传**；也可固定顺序或完全关闭 |
-| 浏览器直接访问 | 打开首页即可看到所有版本和文件并点击下载；`/latest` 永远指向最新版 |
+| 浏览器直接访问 | 打开首页即可看到所有版本和文件并点击下载；`/latest` 指向最新版，`/stable` 永远指向最新**正式版** |
+| 正式版不会被 pre 挤掉 | `KEEP_STABLE=true`（默认）：即使 pre 的版本号更高，最新正式版也始终保留在本地 |
 | API 下载 | `GET /api/latest`、`GET /api/files` 等 JSON 接口，`/download/<文件名>` 可直接下载 |
 | 启动即同步 | 容器启动后立刻同步一次，不用等一个轮询周期 |
 | 可鉴权 | `API_TOKEN` 保护写接口，`PROTECT_DOWNLOADS=true` 连下载也要求鉴权 |
@@ -192,6 +193,37 @@ ASSET_MIRRORS=https://my-proxy.example.com/fetch?target={url}
 
 ---
 
+## 保留策略：为什么只下载到了 pre？
+
+这是版本号比较规则决定的，不是漏拉。以 `EVFBV/blfp-client` 的真实发布情况为例：
+
+| 名次 | 版本 | 类型 |
+| --- | --- | --- |
+| #1 | `v2.3.22-pre` | pre |
+| #2 | `v2.3.21-pre` | pre |
+| #3 | `v2.3.20-pre` | pre |
+| #4 | `v2.3.19` | **正式版（最新）** |
+| #5 | `v2.3.19-pre` | pre |
+
+按语义化版本比较，`v2.3.22-pre` **比正式版 `v2.3.19` 更新**，所以 `KEEP_VERSIONS=1` 只保留 #1，
+排在 #4 的最新正式版会被当成"旧版本"清理掉。默认配置下的表现：
+
+| 想要的效果 | 配置 |
+| --- | --- |
+| 最新版（可能是 pre）+ **始终有一份最新正式版** | 默认即可：`KEEP_STABLE=true`（推荐，本地固定多占一个版本的空间） |
+| 只要最新版本，严格只留 N 个 | `KEEP_STABLE=false` |
+| 完全不要 pre，只跟正式版 | `INCLUDE_PRERELEASE=false` |
+| 想连最近几个 pre 一起留 | 调大 `KEEP_VERSIONS`（本例中要 `4` 才轮得到 `v2.3.19`） |
+
+正式版还有固定的直达地址 `/stable`（`/latest` 会指向最新的 pre，脚本里想拿正式版就用 `/stable`）：
+
+```bash
+curl -L -O -J http://localhost:8080/stable          # 永远是最新正式版
+curl -L -O -J http://localhost:8080/latest          # 永远是最新版本（可能是 pre）
+```
+
+---
+
 ## 访问方式
 
 ### 1. 浏览器直接访问
@@ -201,6 +233,8 @@ ASSET_MIRRORS=https://my-proxy.example.com/fetch?target={url}
 | `http://<host>:8080/` | 网页控制台：版本列表、文件列表、下载按钮、同步状态与进度 |
 | `http://<host>:8080/latest` | **永远下载最新版本**（只有一个文件时自动 302 到该文件；多个文件时返回列表） |
 | `http://<host>:8080/latest/<文件名>` | 从最新版本里取指定文件 |
+| `http://<host>:8080/stable` | **永远下载最新正式版**（自动跳过所有 pre-release；本地没有正式版时提示如何开启保留） |
+| `http://<host>:8080/stable/<文件名>` | 从最新正式版里取指定文件 |
 | `http://<host>:8080/download/<文件名>` | 按文件名下载（带 `Content-Disposition`，浏览器会直接开始下载） |
 | `http://<host>:8080/files/<文件名>` | 按文件名直接访问（网页内预览用，不强制下载） |
 | `http://<host>:8080/releases/<tag>/<文件名>` | 指定历史版本的文件（前提是该版本还在保留范围内） |
